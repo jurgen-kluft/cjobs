@@ -1,0 +1,39 @@
+#ignore all files
+*
+!*/
+
+vendor/
+t2-output/
+target/
+zig-cache/
+tags
+
+#except the following files
+!.gitignore
+!.clang-format
+!*.cpp
+!*.hpp
+!*.c
+!*.h
+!*.inl
+
+!*.zig
+
+!*.go
+
+!*.cs
+!*.csproj
+!*.resx
+
+!*.hlsl
+!*.fragment
+
+!*.md
+!*.jpg
+!*.txt
+!*.html
+
+!*.ini
+!*.bat
+
+#except the following folders
