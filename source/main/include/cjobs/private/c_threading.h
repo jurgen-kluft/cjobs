@@ -20,22 +20,21 @@ namespace cjobs
         };
 
         typedef int32              int32;
-        typedef unsigned int     uint32;
+        typedef unsigned int       uint32;
         typedef long long          int64;
         typedef unsigned long long uint64;
         typedef uint64             threadHandle_t;
+        typedef uint32             threadId_t;
         typedef int32              core_t;
 
         typedef int64  interlockedInt_t;
         typedef uint64 signalHandle_t;
         typedef uint64 mutexHandle_t;
 
+        threadId_t     GetCurrentThreadID();
+        threadHandle_t GetCurrentThread();
+
         typedef uint32 (*ThreadFunc_t)(void*);
-
-        // on win32, the threadID is NOT the same as the threadHandle
-        threadHandle_t GetCurrentThreadID();
-
-        // returns a threadHandle
         threadHandle_t CreateThread(ThreadFunc_t function, void* parms, EPriority priority, const char* name, core_t core, int32 stackSize = DEFAULT_THREAD_STACK_SIZE, bool suspended = false);
 
         void WaitForThread(threadHandle_t threadHandle);

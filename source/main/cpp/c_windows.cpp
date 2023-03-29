@@ -20,14 +20,18 @@ namespace cjobs
 {
     void g_Printf(const char* format, ...)
     {
-        va_list argptr;
-        va_start(argptr, fmt);
-        // common->VPrintf( fmt, argptr );
-        va_end(argptr);
+        // to be implemented by the user (redirect to existing printf code)
     }
 
-    void g_Error(const char* format, ...);
-    bool g_AssertFailed(const char* file, int line, const char* expression);
+    void g_Error(const char* format, ...)
+    {
+        // to be implemented by the user (redirect to existing error handling code)
+    }
+
+    void g_AssertFailed(const char* file, int line, const char* expression)
+    {
+        // to be implemented by the user (redirect to existing assert code)
+    }
 
     uint64 Timer::mFrequency = 0;
 
@@ -68,18 +72,18 @@ namespace cjobs
 
     namespace cthread
     {
-        void SetThreadName(DWORD threadID, const char* name)
+        bool SetThreadName(DWORD threadID, const char* name)
         {
-            THREADNAME_INFO info;
-            info.dwType     = 0x1000;
-            info.szName     = name;
-            info.dwThreadID = threadID;
-            info.dwFlags    = 0;
+            RESULT hr = SetThreadDescription(GetCurrentThread(), name);
+            if (FAILED(hr))
+            {
+                return false;
+            }
+            return true;
         }
-        
-        uintptr_t CreateThread(ThreadFunc_t function, void* parms, EPriority priority, const char* name, core_t core, int stackSize, bool suspended)
-        {
 
+        threadHandle_t CreateThread(ThreadFunc_t function, void* parms, EPriority priority, const char* name, core_t core, int stackSize, bool suspended)
+        {
             DWORD flags = (suspended ? CREATE_SUSPENDED : 0);
             // Without this flag the 'dwStackSize' parameter to CreateThread specifies the "Stack Commit Size"
             // and the "Stack Reserve Size" is set to the value specified at link-time.
@@ -97,13 +101,15 @@ namespace cjobs
             // project settings, then we would still be reserving 50 x 16 = 800 MB of virtual address space.
             flags |= STACK_SIZE_PARAM_IS_A_RESERVATION;
 
+            //DWORD  threadId;
+            //HANDLE handle = CreateThread(NULL, // LPSECURITY_ATTRIBUTES lpsa, //-V513
+             //                            stackSize, (LPTHREAD_START_ROUTINE)function, parms, flags, &threadId);
             DWORD  threadId;
-            HANDLE handle = CreateThread(NULL, // LPSECURITY_ATTRIBUTES lpsa, //-V513
-                                         stackSize, (LPTHREAD_START_ROUTINE)function, parms, flags, &threadId);
+            HANDLE handle = _beginthreadex(NULL, stackSize, function, parms, flags, &threadId);
             if (handle == 0)
             {
                 idLib::common->FatalError("CreateThread error: %i", GetLastError());
-                return (uintptr_t)0;
+                return (threadHandle_t)0;
             }
             SetThreadName(threadId, name);
             if (priority == PRIORITY_HIGHEST)
@@ -125,13 +131,15 @@ namespace cjobs
 
             // Under Windows, we don't set the thread affinity and let the OS deal with scheduling
 
-            return (uintptr_t)handle;
+            return (threadHandle_t)handle;
         }
 
-        uintptr_t GetCurrentThreadID() { return GetCurrentThreadId(); }
-        void      WaitForThread(uintptr_t threadHandle) { WaitForSingleObject((HANDLE)threadHandle, INFINITE); }
+        threadId_t GetCurrentThreadID() { return (threadId_t)::GetCurrentThreadId(); }
+        threadHandle_t GetCurrentThread() { return (threadHandle_t)::GetCurrentThread(); }
 
-        void DestroyThread(uintptr_t threadHandle)
+        void      WaitForThread(threadHandle_t threadHandle) { WaitForSingleObject((HANDLE)threadHandle, INFINITE); }
+
+        void DestroyThread(threadHandle_t threadHandle)
         {
             if (threadHandle == 0)
             {
@@ -154,8 +162,8 @@ namespace cjobs
 
         bool SignalWait(signalHandle_t& handle, int timeout)
         {
-            DWORD result = WaitForSingleObject(handle, timeout == idSysSignal::WAIT_INFINITE ? INFINITE : timeout);
-            assert(result == WAIT_OBJECT_0 || (timeout != idSysSignal::WAIT_INFINITE && result == WAIT_TIMEOUT));
+            DWORD result = WaitForSingleObject(handle, timeout == SysSignal::WAIT_INFINITE ? INFINITE : timeout);
+            assert(result == WAIT_OBJECT_0 || (timeout != SysSignal::WAIT_INFINITE && result == WAIT_TIMEOUT));
             return (result == WAIT_OBJECT_0);
         }
 
