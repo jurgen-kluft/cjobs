@@ -1,9 +1,5 @@
 #include "cjobs/c_jobs.h"
-#include <assert.h>
 #include <memory.h>
-
-typedef int                      idSysMutex;
-typedef nsys::InterlockedInteger SysInterlockedInteger;
 
 namespace njobs
 {
@@ -96,7 +92,7 @@ namespace njobs
     class JobListThreads
     {
     public:
-        JobListThreads(jobListId_t id, jobListPriority_t priority, uint32 maxJobs, uint32 maxSyncs);
+        JobListThreads(nlib::Alloc* allocator, jobListId_t id, const char* name, jobListPriority_t priority, uint32 maxJobs, uint32 maxSyncs);
         ~JobListThreads();
 
         // These are called from the one thread that manages this list.
@@ -138,30 +134,31 @@ namespace njobs
     private:
         static const int32 NUM_DONE_GUARDS = 4; // cycle through 4 guards so we can cyclicly chain job lists
 
-        bool                   threaded;
-        bool                   done;
-        bool                   hasSignal;
-        jobListId_t            listId;
-        jobListPriority_t      listPriority;
-        uint32                 maxJobs;
-        uint32                 maxSyncs;
-        uint32                 numSyncs;
-        int32                  lastSignalJob;
-        SysInterlockedInteger* waitForGuard;
-        SysInterlockedInteger  doneGuards[NUM_DONE_GUARDS];
-        int32                  currentDoneGuard;
-        SysInterlockedInteger  version;
+        bool                      threaded;
+        bool                      done;
+        bool                      hasSignal;
+        jobListId_t               listId;
+        const char*               listName;
+        jobListPriority_t         listPriority;
+        uint32                    maxJobs;
+        uint32                    maxSyncs;
+        uint32                    numSyncs;
+        int32                     lastSignalJob;
+        nsys::InterlockedInteger* waitForGuard;
+        nsys::InterlockedInteger  doneGuards[NUM_DONE_GUARDS];
+        int32                     currentDoneGuard;
+        nsys::InterlockedInteger  version;
         struct job_t
         {
             jobRun_t function;
             void*    data;
             int32    executed;
         };
-        idList<job_t, TAG_JOBLIST>                 jobList;
-        idList<SysInterlockedInteger, TAG_JOBLIST> signalJobCount;
-        SysInterlockedInteger                      currentJob;
-        SysInterlockedInteger                      fetchLock;
-        SysInterlockedInteger                      numThreadsExecuting;
+        nlib::StaticList<job_t, TAG_JOBLIST>                    jobList;
+        nlib::StaticList<nsys::InterlockedInteger, TAG_JOBLIST> signalJobCount;
+        nsys::InterlockedInteger                                currentJob;
+        nsys::InterlockedInteger                                fetchLock;
+        nsys::InterlockedInteger                                numThreadsExecuting;
 
         threadStats_t deferredThreadStats;
         threadStats_t threadStats;
@@ -179,17 +176,19 @@ namespace njobs
     int32 JobListThreads::JOB_SYNCHRONIZE;
     int32 JobListThreads::JOB_LIST_DONE;
 
-    JobListThreads::JobListThreads(jobListId_t id, jobListPriority_t priority, uint32 maxJobs, uint32 maxSyncs)
+    JobListThreads::JobListThreads(nlib::Alloc* allocator, jobListId_t id, const char* name, jobListPriority_t priority, uint32 maxJobs, uint32 maxSyncs)
         : threaded(true)
         , done(true)
         , hasSignal(false)
         , listId(id)
+        , listName(name)
         , listPriority(priority)
         , numSyncs(0)
         , lastSignalJob(0)
         , waitForGuard(nullptr)
         , currentDoneGuard(0)
-        , jobList()
+        , jobList(allocator)
+        , signalJobCount(allocator)
     {
 
         assert(listPriority != JOBLIST_PRIORITY_NONE);
@@ -619,11 +618,12 @@ namespace njobs
         return false;
     }
 
-    JobList::JobList(jobListId_t id, jobListPriority_t priority, uint32 maxJobs, uint32 maxSyncs, const uint32 color)
+    JobList::JobList(nlib::Alloc* allocator, jobListId_t id, const char* name, jobListPriority_t priority, uint32 maxJobs, uint32 maxSyncs, const uint32 color)
+        : color(color)
     {
         assert(priority > JOBLIST_PRIORITY_NONE);
-        this->jobListThreads = new (TAG_JOBLIST) JobListThreads(id, priority, maxJobs, maxSyncs);
-        this->color          = color;
+        //this->jobListThreads = new (TAG_JOBLIST) JobListThreads(id, priority, maxJobs, maxSyncs);
+        this->jobListThreads = allocator->Construct<JobListThreads>(TAG_JOBLIST, allocator, id, name, priority, maxJobs, maxSyncs);
     }
 
     JobList::~JobList() { delete jobListThreads; }
@@ -698,7 +698,7 @@ namespace njobs
         threadJobList_t jobLists[MAX_JOBLISTS]; // cyclic buffer with job lists
         uint32          firstJobList;           // index of the last job list the thread grabbed
         uint32          lastJobList;            // index where the next job list to work on will be added
-        idSysMutex      addJobMutex;
+        nsys::nthreading::Mutex      addJobMutex;
 
         uint32 threadNum;
 
@@ -717,7 +717,7 @@ namespace njobs
     void JobThread::Start(nsys::core_t core, uint32 threadNum)
     {
         this->threadNum = threadNum;
-        StartWorkerThread(va("JobListProcessor_%d", threadNum), core, THREAD_NORMAL, JOB_THREAD_STACK_SIZE);
+        StartWorkerThread(va("JobListProcessor_%d", threadNum), core, nsys::nthreading::PRIORITY_NORMAL, JOB_THREAD_STACK_SIZE);
     }
 
     void JobThread::AddJobList(JobListThreads* jobList)
@@ -744,7 +744,6 @@ namespace njobs
 
         while (!IsTerminating())
         {
-
             // fetch any new job lists and add them to the local list
             if (numJobLists < MAX_JOBLISTS && firstJobList < lastJobList)
             {
@@ -843,7 +842,7 @@ namespace njobs
         virtual void Init(int32 jobs_numThreads);
         virtual void Shutdown();
 
-        virtual JobList* AllocJobList(jobListId_t id, jobListPriority_t priority, uint32 maxJobs, uint32 maxSyncs, const uint32 color);
+        virtual JobList* AllocJobList(const char* name, jobListPriority_t priority, uint32 maxJobs, uint32 maxSyncs, const uint32 color);
         virtual void     FreeJobList(JobList* jobList);
 
         virtual int32    GetNumJobLists() const;
@@ -857,12 +856,12 @@ namespace njobs
         void Submit(JobListThreads* jobList, int32 parallelism);
 
     private:
-        JobThread                          threads[MAX_JOB_THREADS];
-        uint32                               maxThreads;
-        int32                                numPhysicalCpuCores;
-        int32                                numLogicalCpuCores;
-        int32                                numCpuPackages;
-        idStaticList<JobList*, MAX_JOBLISTS> jobLists;
+        JobThread                                threads[MAX_JOB_THREADS];
+        uint32                                   maxThreads;
+        int32                                    numPhysicalCpuCores;
+        int32                                    numLogicalCpuCores;
+        int32                                    numCpuPackages;
+        nlib::StaticList<JobList*, MAX_JOBLISTS> jobLists;
     };
 
     JobsManagerLocal g_JobManagerLocal;
@@ -872,17 +871,12 @@ namespace njobs
 
     void JobsManagerLocal::Init(int32 jobs_numThreads)
     {
-        // on consoles this will have specific cores for the threads, but on PC they will all be CORE_ANY
-        nsys::core_t cores[] = JOB_THREAD_CORES;
-        assert(sizeof(cores) / sizeof(cores[0]) >= MAX_JOB_THREADS);
-
+        nsys::CPUCount(numPhysicalCpuCores, numLogicalCpuCores, numCpuPackages);
         for (int32 i = 0; i < MAX_JOB_THREADS; i++)
         {
-            threads[i].Start(cores[i], i);
+            threads[i].Start(nsys::nthreading::ThreadToCore(i), i);
         }
         maxThreads = jobs_numThreads;
-
-        nsys::CPUCount(numPhysicalCpuCores, numLogicalCpuCores, numCpuPackages);
     }
 
     void JobsManagerLocal::Shutdown()
@@ -893,15 +887,16 @@ namespace njobs
         }
     }
 
-    JobList* JobsManagerLocal::AllocJobList(jobListId_t id, jobListPriority_t priority, uint32 maxJobs, uint32 maxSyncs, const uint32 color)
+    JobList* JobsManagerLocal::AllocJobList(const char* name, jobListPriority_t priority, uint32 maxJobs, uint32 maxSyncs, const uint32 color)
     {
         for (int32 i = 0; i < jobLists.Num(); i++)
         {
-            if (jobLists[i]->GetId() == id)
+            if (jobLists[i]->GetName() == name)
             {
                 // idStudio may cause job lists to be allocated multiple times
             }
         }
+
         JobList* jobList = new (TAG_JOBLIST) JobList(id, priority, maxJobs, maxSyncs, color);
         jobLists.Append(jobList);
         return jobList;
