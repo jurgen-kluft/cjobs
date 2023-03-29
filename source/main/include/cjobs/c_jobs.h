@@ -1,21 +1,48 @@
 #ifndef __CJOBS_H__
 #define __CJOBS_H__
 
-namespace njobs
+namespace cjobs
 {
     typedef int                int32;
     typedef unsigned int       uint32;
     typedef unsigned long long uint64;
+    
+    enum EAllocTags
+    {
+        TAG_JOBLIST = 0x4a4c4f42 // "JOBL"
+    };
 
-    class Alloc;
+    class Alloc
+    {
+    public:
+        void* Allocate(uint32 size, int32 alignment = sizeof(void*), int32 tag = 0) { return v_Allocate(size, alignment, tag); }
+        void  Deallocate(void* ptr) { v_Deallocate(ptr); }
+
+        // variable arguments
+        template <typename T, typename... Args> T* Construct(int32 tag, Args&&... args)
+        {
+            void* mem = Allocate(sizeof(T), sizeof(void*), tag);
+            return new (mem) T(std::forward<Args>(args)...);
+        }
+
+        template <typename T> void Destruct(T* ptr)
+        {
+            ptr->~T();
+            Deallocate(ptr);
+        }
+
+    protected:
+        virtual void* v_Allocate(uint32 size, int32 alignment, int32 tag = 0) = 0;
+        virtual void  v_Deallocate(void* ptr)                                 = 0;
+    };
 
     typedef void (*JobRun_t)(void*);
 
     enum EJobSyncType_t
     {
-        SYNC_NONE,
-        SYNC_SIGNAL,
-        SYNC_SYNCHRONIZE
+        JOB_SYNC_NONE,
+        JOB_SYNC_SIGNAL,
+        JOB_SYNC_SYNCHRONIZE
     };
 
     typedef int32 JobListId_t;
@@ -45,16 +72,16 @@ namespace njobs
 
     struct ThreadStats_t
     {
-        uint32 GetNumExecutedJobs() const;                    // Get the number of jobs executed in this job list.
-        uint32 GetNumSyncs() const;                           // Get the number of sync points.
-        uint64 GetSubmitTimeMicroSec() const;                 // Time at which the job list was submitted.
-        uint64 GetStartTimeMicroSec() const;                  // Time at which execution of this job list started.
-        uint64 GetFinishTimeMicroSec() const;                 // Time at which all jobs in the list were executed.
-        uint64 GetWaitTimeMicroSec() const;                   // Time the host thread waited for this job list to finish.
-        uint64 GetTotalProcessingTimeMicroSec() const;        // Get the total time all units spent processing this job list.
-        uint64 GetTotalWastedTimeMicroSec() const;            // Get the total time all units wasted while processing this job list.
-        uint64 GetUnitProcessingTimeMicroSec(int unit) const; // Time the given unit spent processing this job list.
-        uint64 GetUnitWastedTimeMicroSec(int unit) const;     // Time the given unit wasted while processing this job list.
+        uint32 GetNumExecutedJobs() const;                      // Get the number of jobs executed in this job list.
+        uint32 GetNumSyncs() const;                             // Get the number of sync points.
+        uint64 GetSubmitTimeMicroSec() const;                   // Time at which the job list was submitted.
+        uint64 GetStartTimeMicroSec() const;                    // Time at which execution of this job list started.
+        uint64 GetFinishTimeMicroSec() const;                   // Time at which all jobs in the list were executed.
+        uint64 GetWaitTimeMicroSec() const;                     // Time the host thread waited for this job list to finish.
+        uint64 GetTotalProcessingTimeMicroSec() const;          // Get the total time all units spent processing this job list.
+        uint64 GetTotalWastedTimeMicroSec() const;              // Get the total time all units wasted while processing this job list.
+        uint64 GetUnitProcessingTimeMicroSec(int32 unit) const; // Time the given unit spent processing this job list.
+        uint64 GetUnitWastedTimeMicroSec(int32 unit) const;     // Time the given unit wasted while processing this job list.
 
         uint32 mNumExecutedJobs;
         uint32 mNumExecutedSyncs;
@@ -87,11 +114,12 @@ namespace njobs
         ThreadStats_t const* GetStats() const;                   // Get the stats for this job list.
 
     protected:
+        Alloc*            mAllocator;
         JobListInstance* mJobListInstance;
         const char*      mName;
         const uint32     mColor;
 
-        JobList(Alloc*, JobListId_t id, const char* name, EJobListPriority_t priority, uint32 maxJobs, uint32 maxSyncs, const uint32 color);
+        JobList(Alloc* allocator, JobListId_t id, const char* name, EJobListPriority_t priority, uint32 maxJobs, uint32 maxSyncs, const uint32 color);
         ~JobList();
     };
 
@@ -120,6 +148,6 @@ namespace njobs
 
     extern JobsManager* g_JobManager;
 
-} // namespace njobs
+} // namespace cjobs
 
 #endif // __CJOBS_H__
