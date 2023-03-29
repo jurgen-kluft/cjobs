@@ -1,4 +1,6 @@
 #include "cjobs/c_jobs.h"
+#include "cjobs/private/c_threading.h"
+
 #include <memory.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,51 +15,6 @@ namespace cjobs
         int32 Increment();
         int32 Decrement();
     };
-
-    void g_CPUCount(int32& logicalNum, int32& coreNum, int32& packageNum);
-
-    namespace nthread
-    {
-        typedef int32 core_t;
-
-        // Consoles: this will return specific cores for each thread
-        // PC: this will return CORE_ANY for each thread
-        core_t g_ThreadToCore(int32 thread);
-
-        class Mutex
-        {
-        public:
-            Mutex();
-            ~Mutex();
-
-            void Lock();
-            void Unlock();
-        };
-
-        enum EPriority
-        {
-            PRIORITY_NONE,
-            PRIORITY_LOW,
-            PRIORITY_NORMAL,
-            PRIORITY_HIGH
-        };
-
-        class Thread
-        {
-        public:
-            bool IsTerminating() const;
-            void StopThread();
-            void WaitForThread();
-            void SignalWork();
-
-            void StartWorkerThread(const char* name, core_t core, EPriority priority, int32 stackSize = 0);
-        
-        protected:
-            virtual int32 Run() = 0;
-        };
-
-        void g_Yield();
-    } // namespace nthread
 
     template <typename T> class List
     {
@@ -449,13 +406,13 @@ namespace cjobs
 
             while (mSignalJobCount[mSignalJobCount.Num() - 1].GetValue() > 0)
             {
-                nthread::g_Yield();
+                cthread::Yield();
                 waited = true;
             }
             mVersion.Increment();
             while (mNumThreadsExecuting.GetValue() > 0)
             {
-                nthread::g_Yield();
+                cthread::Yield();
                 waited = true;
             }
 
@@ -707,13 +664,13 @@ namespace cjobs
 
     const int32 JOB_THREAD_STACK_SIZE = 256 * 1024; // same size as the SPU local store
 
-    class JobThread : public nthread::Thread
+    class JobThread : public cthread::Thread
     {
     public:
         JobThread();
         ~JobThread();
 
-        void Start(nthread::core_t _core, uint32 _threadNum);
+        void Start(cthread::core_t _core, uint32 _threadNum);
         void AddJobList(JobListInstance* mJobList);
 
     protected:
@@ -721,7 +678,7 @@ namespace cjobs
         int32            mJobListVersions[CONFIG_MAX_JOBLISTS];  // cyclic buffer with job lists
         uint32           mFirstJobList;                          // index of the last job list the thread grabbed
         uint32           mLastJobList;                           // index where the next job list to work on will be added
-        nthread::Mutex   mAddJobMutex;
+        cthread::Mutex   mAddJobMutex;
         char             mName[64];
         uint32           mThreadNum;
         bool*            mJobsPrioritize;
@@ -738,12 +695,12 @@ namespace cjobs
 
     JobThread::~JobThread() {}
 
-    void JobThread::Start(nthread::core_t _core, uint32 _threadNum)
+    void JobThread::Start(cthread::core_t _core, uint32 _threadNum)
     {
         this->mThreadNum = _threadNum;
         strcpy(mName, "JobListProcessor_00");
         itoa(_threadNum, mName + strlen(mName), 10);
-        StartWorkerThread(mName, _core, nthread::PRIORITY_NORMAL, JOB_THREAD_STACK_SIZE);
+        StartWorkerThread(mName, _core, cthread::PRIORITY_NORMAL, JOB_THREAD_STACK_SIZE);
     }
 
     void JobThread::AddJobList(JobListInstance* mJobList)
@@ -754,7 +711,7 @@ namespace cjobs
             // wait until there is space available because in rare cases multiple versions of the same job lists may still be queued
             while (mLastJobList - mFirstJobList >= CONFIG_MAX_JOBLISTS)
             {
-                nthread::g_Yield();
+                cthread::Yield();
             }
             DEBUG_ASSERT(mLastJobList - mFirstJobList < CONFIG_MAX_JOBLISTS);
             mJobListInstances[mLastJobList & (CONFIG_MAX_JOBLISTS - 1)] = mJobList;
@@ -841,7 +798,7 @@ namespace cjobs
                 {
                     if ((result & JobListInstance::RUN_PROGRESS) == 0)
                     {
-                        nthread::g_Yield();
+                        cthread::Yield();
                     }
                 }
                 lastStalledJobList = currentJobList;
@@ -886,7 +843,7 @@ namespace cjobs
         int32                mNumPhysicalCpuCores;
         int32                mNumLogicalCpuCores;
         int32                mNumCpuPackages;
-        StaticList<JobList*> mJobLists;
+        List<JobList*>       mJobLists;
         JobListRegister      mJobListRegister;
         JobsRegister         mJobsRegister;
     };
@@ -902,10 +859,10 @@ namespace cjobs
         mJobLists.Init(allocator);
         mJobLists.SetCapacity(CONFIG_MAX_JOBLISTS);
 
-        g_CPUCount(mNumPhysicalCpuCores, mNumLogicalCpuCores, mNumCpuPackages);
+        cthread::CPUCount(mNumPhysicalCpuCores, mNumLogicalCpuCores, mNumCpuPackages);
         for (int32 i = 0; i < CONFIG_MAX_JOBTHREADS; i++)
         {
-            mThreads[i].Start(nthread::g_ThreadToCore(i), i);
+            mThreads[i].Start(cthread::ThreadToCore(i), i);
         }
         mMaxThreads = jobs_numThreads;
     }
