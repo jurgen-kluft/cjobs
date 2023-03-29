@@ -84,31 +84,37 @@ namespace njobs
         virtual void  v_Deallocate(void* ptr)                = 0;
     };
 
-    template <typename T, int32 C> class StaticList
+    template <typename T> class StaticList
     {
     public:
-        StaticList(Alloc* alloc)
-            : mCount(0)
-            , mAlloc(alloc)
+        StaticList()
+            : mAlloc(nullptr)
+            , mNum(0)
+            , mCapacity(0)
         {
         }
 
-        int32 Num() const { return mCount; }
-        bool  IsFull() const { return mCount == C; }
-        void  SetNum(int32 n) { mCount = n; }
-        void  AssureSize(int32 n);
+        void  Init(Alloc* alloc);
+
+        bool  IsEmtpy() const { return mNum == 0; }
+        bool  IsFull() const { return mNum == mCapacity; }
+
+        int32 Num() const { return mNum; }
+        void  SetNum(int32 n) { mNum = n; }
+        void  SetCapacity(int32 n);
 
         T&    Alloc();
         void  Append(const T& item);
         int32 FindIndex(const T& item) const;
         void  RemoveIndexFast(int32 index);
 
-        T& operator[](int32 index) { return data[index]; }
-        T  operator[](int32 index) const { return data[index]; }
+        T& operator[](int32 index) { return mData[index]; }
+        T  operator[](int32 index) const { return mData[index]; }
 
     protected:
-        T*    data;
-        int32 mCount;
+        T*    mData;
+        int32 mNum;
+        int32 mCapacity;
     };
 
     void g_Printf(const char* format, ...);
@@ -250,8 +256,8 @@ namespace njobs
             int32    executed;
         };
         int32                                       mJobListIndexDebug;
-        StaticList<job_t, TAG_JOBLIST>              mJobList;
-        StaticList<InterlockedInteger, TAG_JOBLIST> mSignalJobCount;
+        StaticList<job_t>              mJobList;
+        StaticList<InterlockedInteger> mSignalJobCount;
         InterlockedInteger                          mCurrentJob;
         InterlockedInteger                          mFetchLock;
         InterlockedInteger                          mNumThreadsExecuting;
@@ -285,23 +291,30 @@ namespace njobs
         , mLastSignalJob(0)
         , mWaitForGuard(nullptr)
         , mCurrentDoneGuard(0)
-        , mJobList(allocator)
-        , mSignalJobCount(allocator)
+        , mJobList()
+        , mSignalJobCount()
     {
         DEBUG_ASSERT(mListPriority != JOBLIST_PRIORITY_NONE);
 
         this->mMaxJobs  = mMaxJobs;
         this->mMaxSyncs = mMaxSyncs;
-        mJobList.AssureSize(mMaxJobs + mMaxSyncs * 2 + 1); // syncs go in as dummy jobs and one more to update the doneCount
+        mJobList.Init(allocator);
+        mJobList.SetCapacity(mMaxJobs + mMaxSyncs * 2 + 1); // syncs go in as dummy jobs and one more to update the doneCount
         mJobList.SetNum(0);
-        mSignalJobCount.AssureSize(mMaxSyncs + 1); // need one extra for submit
+        mSignalJobCount.Init(allocator);
+        mSignalJobCount.SetCapacity(mMaxSyncs + 1); // need one extra for submit
         mSignalJobCount.SetNum(0);
 
         memset(&mDeferredThreadStats, 0, sizeof(ThreadStats_t));
         memset(&mThreadStats, 0, sizeof(ThreadStats_t));
     }
 
-    JobListInstance::~JobListInstance() { Wait(); }
+    JobListInstance::~JobListInstance() 
+    {
+        Wait(); 
+        mJobList.SetCapacity(0);
+        mSignalJobCount.SetCapacity(0);
+    }
 
     inline void JobListInstance::AddJob(JobRun_t function, void* data)
     {
@@ -949,7 +962,7 @@ namespace njobs
         int32                                     mNumPhysicalCpuCores;
         int32                                     mNumLogicalCpuCores;
         int32                                     mNumCpuPackages;
-        StaticList<JobList*, CONFIG_MAX_JOBLISTS> mJobLists;
+        StaticList<JobList*> mJobLists;
         JobListRegister                           mJobListRegister;
         JobsRegister                              mJobsRegister;
     };
@@ -962,6 +975,8 @@ namespace njobs
     void JobsManagerLocal::Init(Alloc* allocator, int32 jobs_numThreads)
     {
         mAllocator = allocator;
+        mJobLists.Init(allocator);
+        mJobLists.SetCapacity(CONFIG_MAX_JOBLISTS);
 
         g_CPUCount(mNumPhysicalCpuCores, mNumLogicalCpuCores, mNumCpuPackages);
         for (int32 i = 0; i < CONFIG_MAX_JOBTHREADS; i++)
@@ -977,6 +992,7 @@ namespace njobs
         {
             mThreads[i].StopThread();
         }
+        mJobLists.SetCapacity(0);
     }
 
     JobList* JobsManagerLocal::AllocJobList(const char* name, EJobListPriority_t priority, uint32 mMaxJobs, uint32 mMaxSyncs, const uint32 color)

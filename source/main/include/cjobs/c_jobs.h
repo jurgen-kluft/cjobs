@@ -101,7 +101,7 @@ namespace njobs
         virtual ~JobsManager() {}
 
         virtual void Init(Alloc* allocator, int32 jobs_numThreads) = 0;
-        virtual void Shutdown()                  = 0;
+        virtual void Shutdown()                                    = 0;
 
         virtual JobList* AllocJobList(const char* name, EJobListPriority_t priority, uint32 maxJobs, uint32 maxSyncs, const uint32 color) = 0;
         virtual void     FreeJobList(JobList* jobList)                                                                                    = 0;
