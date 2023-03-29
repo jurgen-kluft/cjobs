@@ -96,7 +96,7 @@ namespace njobs
 
         void  Init(Alloc* alloc);
 
-        bool  IsEmtpy() const { return mNum == 0; }
+        bool  IsEmpty() const { return mNum == 0; }
         bool  IsFull() const { return mNum == mCapacity; }
 
         int32 Num() const { return mNum; }
