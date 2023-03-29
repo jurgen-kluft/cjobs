@@ -1,126 +1,222 @@
 #include "cjobs/c_jobs.h"
 #include <memory.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 namespace njobs
 {
-    static const int32 MAX_REGISTERED_JOBS = 128;
-
-    struct registeredJob
+    struct InterlockedInteger
     {
-        jobRun_t    function;
-        const char* name;
-    } registeredJobs[MAX_REGISTERED_JOBS];
-
-    static int32 numRegisteredJobs;
-
-    const char* GetJobListName(jobListId_t id) { return jobNames[id]; }
-
-    static bool IsRegisteredJob(jobRun_t function)
-    {
-        for (int32 i = 0; i < numRegisteredJobs; i++)
-        {
-            if (registeredJobs[i].function == function)
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    void RegisterJob(jobRun_t function, const char* name)
-    {
-        if (IsRegisteredJob(function))
-        {
-            return;
-        }
-        registeredJobs[numRegisteredJobs].function = function;
-        registeredJobs[numRegisteredJobs].name     = name;
-        numRegisteredJobs++;
-    }
-
-    const char* GetJobName(jobRun_t function)
-    {
-        for (int32 i = 0; i < numRegisteredJobs; i++)
-        {
-            if (registeredJobs[i].function == function)
-            {
-                return registeredJobs[i].name;
-            }
-        }
-        return "unknown";
-    }
-
-    const static int32 MAX_THREADS = 32;
-
-    struct threadJobListState_t
-    {
-        threadJobListState_t()
-            : jobList(nullptr)
-            , version(0xFFFFFFFF)
-            , signalIndex(0)
-            , lastJobIndex(0)
-            , nextJobIndex(-1)
-        {
-        }
-        threadJobListState_t(int32 _version)
-            : jobList(nullptr)
-            , version(_version)
-            , signalIndex(0)
-            , lastJobIndex(0)
-            , nextJobIndex(-1)
-        {
-        }
-        JobListThreads* jobList;
-        int32           version;
-        int32           signalIndex;
-        int32           lastJobIndex;
-        int32           nextJobIndex;
+        int32 GetValue();
+        void  SetValue(int32 value);
+        int32 Increment();
+        int32 Decrement();
     };
 
-    struct threadStats_t
-    {
-        uint32 numExecutedJobs;
-        uint32 numExecutedSyncs;
-        uint64 submitTime;
-        uint64 startTime;
-        uint64 endTime;
-        uint64 waitTime;
-        uint64 threadExecTime[MAX_THREADS];
-        uint64 threadTotalTime[MAX_THREADS];
-    };
+    void g_CPUCount(int32& logicalNum, int32& coreNum, int32& packageNum);
 
-    class JobListThreads
+    namespace nthread
+    {
+        typedef int32 core_t;
+
+        // Consoles: this will return specific cores for each thread
+        // PC: this will return CORE_ANY for each thread
+        core_t g_ThreadToCore(int32 thread);
+
+        class Mutex
+        {
+        public:
+            Mutex();
+            ~Mutex();
+
+            void Lock();
+            void Unlock();
+        };
+
+        enum EPriority
+        {
+            PRIORITY_NONE,
+            PRIORITY_LOW,
+            PRIORITY_NORMAL,
+            PRIORITY_HIGH
+        };
+
+        class Thread
+        {
+        public:
+            bool IsTerminating() const;
+            void StopThread();
+            void WaitForThread();
+            void SignalWork();
+
+            void StartWorkerThread(const char* name, core_t core, EPriority priority, int32 stackSize = 0);
+        };
+
+        void g_Yield();
+    } // namespace nthread
+
+    uint64 g_Microseconds();
+
+#define TAG_JOBLIST 0x4a4c4f42 // "JOBL"
+
+    class Alloc
     {
     public:
-        JobListThreads(nlib::Alloc* allocator, jobListId_t id, const char* name, jobListPriority_t priority, uint32 maxJobs, uint32 maxSyncs);
-        ~JobListThreads();
+        void* Allocate(uint32 size, int32 alignment = sizeof(void*), int32 tag = 0) { return v_Allocate(size, tag); }
+        void  Deallocate(void* ptr) { v_Deallocate(ptr); }
+
+        // variable arguments
+        template <typename T, typename... Args> T* Construct(int32 tag, Args&&... args)
+        {
+            void* mem = Allocate(sizeof(T), sizeof(void*), tag);
+            return new (mem) T(std::forward<Args>(args)...);
+        }
+
+        template <typename T> void Destruct(T* ptr)
+        {
+            ptr->~T();
+            Deallocate(ptr);
+        }
+
+    protected:
+        virtual void* v_Allocate(uint32 size, int32 tag = 0) = 0;
+        virtual void  v_Deallocate(void* ptr)                = 0;
+    };
+
+    template <typename T, int32 C> class StaticList
+    {
+    public:
+        StaticList(Alloc* alloc)
+            : mCount(0)
+            , mAlloc(alloc)
+        {
+        }
+
+        int32 Num() const { return mCount; }
+        bool  IsFull() const { return mCount == C; }
+        void  SetNum(int32 n) { mCount = n; }
+        void  AssureSize(int32 n);
+
+        T&    Alloc();
+        void  Append(const T& item);
+        int32 FindIndex(const T& item) const;
+        void  RemoveIndexFast(int32 index);
+
+        T& operator[](int32 index) { return data[index]; }
+        T  operator[](int32 index) const { return data[index]; }
+
+    protected:
+        T*    data;
+        int32 mCount;
+    };
+
+    void g_Printf(const char* format, ...);
+    void g_Assert(const char* format, ...);
+    void g_Error(const char* format, ...);
+    bool g_AssertFailed( const char *file, int line, const char *expression );
+
+#define DEBUG_ASSERT(x)                                        \
+    if (!(x))                                                  \
+    {                                                          \
+        g_Assert("ASSERT: %s:%d: %s", __FILE__, __LINE__, #x); \
+    }
+
+#define DEBUG_VERIFY( x )		( ( x ) ? true : ( g_AssertFailed( __FILE__, __LINE__, #x ), false ) )
+
+
+    struct JobListState_t
+    {
+        JobListState_t()
+            : mJobList(nullptr)
+            , mVersion(0xFFFFFFFF)
+            , signalIndex(0)
+            , lastJobIndex(0)
+            , nextJobIndex(-1)
+        {
+        }
+        JobListState_t(int32 _version)
+            : mJobList(nullptr)
+            , mVersion(_version)
+            , signalIndex(0)
+            , lastJobIndex(0)
+            , nextJobIndex(-1)
+        {
+        }
+        JobListInstance* mJobList;
+        int32            mVersion;
+        int32            signalIndex;
+        int32            lastJobIndex;
+        int32            nextJobIndex;
+    };
+
+    class JobsRegister
+    {
+    public:
+        JobsRegister();
+        ~JobsRegister();
+
+        int32 Count() const;
+        void        RegisterJob(JobRun_t function, const char* name);
+        bool        IsRegisteredJob(JobRun_t function) const;
+        const char* GetJobNameByIndex(int32 index) const;
+        const char* GetJobNameByFunction(JobRun_t function) const;
+
+    protected:
+        int32       mNumRegisteredJobs;
+        JobRun_t    mRegisteredJobFuncs[CONFIG_MAX_REGISTERED_JOBS];
+        const char* mRegisteredJobNames[CONFIG_MAX_REGISTERED_JOBS];
+    };
+
+    void JobsRegister::RegisterJob(JobRun_t function, const char* name)
+    {
+        if (IsRegisteredJob(function))
+            return;
+        mRegisteredJobFuncs[mNumRegisteredJobs] = function;
+        mRegisteredJobNames[mNumRegisteredJobs] = name;
+        mNumRegisteredJobs++;
+    }
+
+    class JobListRegister
+    {
+    public:
+        JobListRegister();
+        ~JobListRegister();
+
+        JobListId_t RegisterJobList(JobList* mJobList);
+        void        UnregisterJobList(JobList* mJobList);
+
+        JobListInstance* FindJobList(JobListId_t id) const;
+        const char*      FindJobListName(JobListId_t id) const;
+
+    protected:
+        JobListInstance* mRegisteredJobLists[CONFIG_MAX_REGISTERED_JOBS];
+        const char*      mRegisteredJobListNames[CONFIG_MAX_REGISTERED_JOBS];
+    };
+
+    class JobListInstance
+    {
+    public:
+        JobListInstance(Alloc* allocator, JobListId_t id, const char* name, EJobListPriority_t priority, uint32 mMaxJobs, uint32 mMaxSyncs);
+        ~JobListInstance();
 
         // These are called from the one thread that manages this list.
-        inline void AddJob(jobRun_t function, void* data);
-        inline void InsertSyncPoint(jobSyncType_t syncType);
-        void        Submit(JobListThreads* waitForJobList_, int32 parallelism);
+        inline void AddJob(JobRun_t function, void* data);
+        inline void InsertSyncPoint(EJobSyncType_t syncType);
+        void        Submit(JobListInstance* waitForJobList_, int32 parallelism);
         void        Wait();
         bool        TryWait();
         bool        IsSubmitted() const;
 
-        uint32 GetNumExecutedJobs() const { return threadStats.numExecutedJobs; }
-        uint32 GetNumSyncs() const { return threadStats.numExecutedSyncs; }
-        uint64 GetSubmitTimeMicroSec() const { return threadStats.submitTime; }
-        uint64 GetStartTimeMicroSec() const { return threadStats.startTime; }
-        uint64 GetFinishTimeMicroSec() const { return threadStats.endTime; }
-        uint64 GetWaitTimeMicroSec() const { return threadStats.waitTime; }
-        uint64 GetTotalProcessingTimeMicroSec() const;
-        uint64 GetTotalWastedTimeMicroSec() const;
-        uint64 GetUnitProcessingTimeMicroSec(int32 unit) const;
-        uint64 GetUnitWastedTimeMicroSec(int32 unit) const;
-
-        jobListId_t       GetId() const { return listId; }
-        jobListPriority_t GetPriority() const { return listPriority; }
-        int32             GetVersion() { return version.GetValue(); }
+        JobListId_t          GetId() const { return mListId; }
+        EJobListPriority_t   GetPriority() const { return mListPriority; }
+        int32                GetVersion() { return mVersion.GetValue(); }
+        ThreadStats_t*       GetThreadStats() { return &mThreadStats; }
+        ThreadStats_t const* GetThreadStats() const { return &mThreadStats; }
 
         bool WaitForOtherJobList();
 
-        // This is thread safe and called from the job threads.
+        // This is thread safe and called from the job mThreads.
         enum runResult_t
         {
             RUN_OK       = 0,
@@ -129,41 +225,43 @@ namespace njobs
             RUN_STALLED  = 1 << 2
         };
 
-        int32 RunJobs(uint32 threadNum, threadJobListState_t& state, bool singleJob);
+        int32 RunJobs(uint32 mThreadNum, JobListState_t& state, bool singleJob);
 
-    private:
         static const int32 NUM_DONE_GUARDS = 4; // cycle through 4 guards so we can cyclicly chain job lists
 
-        bool                      threaded;
-        bool                      done;
-        bool                      hasSignal;
-        jobListId_t               listId;
-        const char*               listName;
-        jobListPriority_t         listPriority;
-        uint32                    maxJobs;
-        uint32                    maxSyncs;
-        uint32                    numSyncs;
-        int32                     lastSignalJob;
-        nsys::InterlockedInteger* waitForGuard;
-        nsys::InterlockedInteger  doneGuards[NUM_DONE_GUARDS];
-        int32                     currentDoneGuard;
-        nsys::InterlockedInteger  version;
+        bool                mThreaded;
+        bool                mDone;
+        bool                mHasSignal;
+        JobListId_t         mListId;
+        const char*         mListName;
+        EJobListPriority_t  mListPriority;
+        uint32              mMaxJobs;
+        uint32              mMaxSyncs;
+        uint32              mNumSyncs;
+        int32               mLastSignalJob;
+        InterlockedInteger* mWaitForGuard;
+        InterlockedInteger  mDoneGuards[NUM_DONE_GUARDS];
+        int32               mCurrentDoneGuard;
+        InterlockedInteger  mVersion;
         struct job_t
         {
-            jobRun_t function;
+            JobRun_t function;
             void*    data;
             int32    executed;
         };
-        nlib::StaticList<job_t, TAG_JOBLIST>                    jobList;
-        nlib::StaticList<nsys::InterlockedInteger, TAG_JOBLIST> signalJobCount;
-        nsys::InterlockedInteger                                currentJob;
-        nsys::InterlockedInteger                                fetchLock;
-        nsys::InterlockedInteger                                numThreadsExecuting;
+        int32                                       mJobListIndexDebug;
+        StaticList<job_t, TAG_JOBLIST>              mJobList;
+        StaticList<InterlockedInteger, TAG_JOBLIST> mSignalJobCount;
+        InterlockedInteger                          mCurrentJob;
+        InterlockedInteger                          mFetchLock;
+        InterlockedInteger                          mNumThreadsExecuting;
 
-        threadStats_t deferredThreadStats;
-        threadStats_t threadStats;
+        JobsRegister* mJobsRegister;
 
-        int32 RunJobsInternal(uint32 threadNum, threadJobListState_t& state, bool singleJob);
+        ThreadStats_t mDeferredThreadStats;
+        ThreadStats_t mThreadStats;
+
+        int32 RunJobsInternal(uint32 mThreadNum, JobListState_t& state, bool singleJob);
 
         static void Nop(void* data) {}
 
@@ -172,56 +270,56 @@ namespace njobs
         static int32 JOB_LIST_DONE;
     };
 
-    int32 JobListThreads::JOB_SIGNAL;
-    int32 JobListThreads::JOB_SYNCHRONIZE;
-    int32 JobListThreads::JOB_LIST_DONE;
+    int32 JobListInstance::JOB_SIGNAL;
+    int32 JobListInstance::JOB_SYNCHRONIZE;
+    int32 JobListInstance::JOB_LIST_DONE;
 
-    JobListThreads::JobListThreads(nlib::Alloc* allocator, jobListId_t id, const char* name, jobListPriority_t priority, uint32 maxJobs, uint32 maxSyncs)
-        : threaded(true)
-        , done(true)
-        , hasSignal(false)
-        , listId(id)
-        , listName(name)
-        , listPriority(priority)
-        , numSyncs(0)
-        , lastSignalJob(0)
-        , waitForGuard(nullptr)
-        , currentDoneGuard(0)
-        , jobList(allocator)
-        , signalJobCount(allocator)
+    JobListInstance::JobListInstance(Alloc* allocator, JobListId_t id, const char* name, EJobListPriority_t priority, uint32 mMaxJobs, uint32 mMaxSyncs)
+        : mThreaded(true)
+        , mDone(true)
+        , mHasSignal(false)
+        , mListId(id)
+        , mListName(name)
+        , mListPriority(priority)
+        , mNumSyncs(0)
+        , mLastSignalJob(0)
+        , mWaitForGuard(nullptr)
+        , mCurrentDoneGuard(0)
+        , mJobList(allocator)
+        , mSignalJobCount(allocator)
     {
+        DEBUG_ASSERT(mListPriority != JOBLIST_PRIORITY_NONE);
 
-        assert(listPriority != JOBLIST_PRIORITY_NONE);
+        this->mMaxJobs  = mMaxJobs;
+        this->mMaxSyncs = mMaxSyncs;
+        mJobList.AssureSize(mMaxJobs + mMaxSyncs * 2 + 1); // syncs go in as dummy jobs and one more to update the doneCount
+        mJobList.SetNum(0);
+        mSignalJobCount.AssureSize(mMaxSyncs + 1); // need one extra for submit
+        mSignalJobCount.SetNum(0);
 
-        this->maxJobs  = maxJobs;
-        this->maxSyncs = maxSyncs;
-        jobList.AssureSize(maxJobs + maxSyncs * 2 + 1); // syncs go in as dummy jobs and one more to update the doneCount
-        jobList.SetNum(0);
-        signalJobCount.AssureSize(maxSyncs + 1); // need one extra for submit
-        signalJobCount.SetNum(0);
-
-        memset(&deferredThreadStats, 0, sizeof(threadStats_t));
-        memset(&threadStats, 0, sizeof(threadStats_t));
+        memset(&mDeferredThreadStats, 0, sizeof(ThreadStats_t));
+        memset(&mThreadStats, 0, sizeof(ThreadStats_t));
     }
 
-    JobListThreads::~JobListThreads() { Wait(); }
+    JobListInstance::~JobListInstance() { Wait(); }
 
-    inline void JobListThreads::AddJob(jobRun_t function, void* data)
+    inline void JobListInstance::AddJob(JobRun_t function, void* data)
     {
-        assert(done);
+        DEBUG_ASSERT(mDone);
+
 #if defined(_DEBUG)
-        // make sure there isn't already a job with the same function and data in the list
-        if (jobList.Num() < 1000)
-        { // don't do this N^2 slow check on big lists
-            for (int32 i = 0; i < jobList.Num(); i++)
-            {
-                assert(jobList[i].function != function || jobList[i].data != data);
-            }
+        // don't check all jobs each time we come here, just check a part and next time another part
+        for (int32 i = 0; i < 10; i++)
+        {
+            mJobListIndexDebug = (mJobListIndexDebug + 1);
+            if (mJobListIndexDebug >= mJobList.Num())
+                mJobListIndexDebug = 0;
+            DEBUG_ASSERT(mJobList[mJobListIndexDebug].function != function || mJobList[mJobListIndexDebug].data != data);
         }
 #endif
-        if (1)
-        { // JDC: this never worked in tech5!  !jobList.IsFull() ) {
-            job_t& job   = jobList.Alloc();
+        if (!mJobList.IsFull())
+        {
+            job_t& job   = mJobList.Alloc();
             job.function = function;
             job.data     = data;
             job.executed = 0;
@@ -229,14 +327,14 @@ namespace njobs
         else
         {
             // debug output to show us what is overflowing
-            int32 currentJobCount[MAX_REGISTERED_JOBS] = {};
+            int32 currentJobCount[CONFIG_MAX_REGISTERED_JOBS] = {};
 
-            for (int32 i = 0; i < jobList.Num(); ++i)
+            for (int32 i = 0; i < mJobList.Num(); ++i)
             {
-                const char* jobName = GetJobName(jobList[i].function);
-                for (int32 j = 0; j < numRegisteredJobs; ++j)
+                const char* jobName = mJobsRegister->GetJobNameByFunction(mJobList[i].function);
+                for (int32 j = 0; j < mJobsRegister->Count(); ++j)
                 {
-                    if (jobName == registeredJobs[j].name)
+                    if (jobName == mJobsRegister->GetJobNameByIndex(j))
                     {
                         currentJobCount[j]++;
                         break;
@@ -245,149 +343,149 @@ namespace njobs
             }
 
             // print the quantity of each job type
-            for (int32 i = 0; i < numRegisteredJobs; ++i)
+            for (int32 i = 0; i < mJobsRegister->Count(); ++i)
             {
                 if (currentJobCount[i] > 0)
                 {
-                    nlib::Printf("Job: %s, # %d", registeredJobs[i].name, currentJobCount[i]);
+                    g_Printf("Job: %s, # %d", mJobsRegister->GetJobNameByIndex(i), currentJobCount[i]);
                 }
             }
-            nlib::Error("Can't add job '%s', too many jobs %d", GetJobName(function), jobList.Num());
+            g_Error("Can't add job '%s', too many jobs %d", mJobsRegister->GetJobNameByFunction(function), mJobList.Num());
         }
     }
 
-    inline void JobListThreads::InsertSyncPoint(jobSyncType_t syncType)
+    inline void JobListInstance::InsertSyncPoint(EJobSyncType_t syncType)
     {
-        assert(done);
+        DEBUG_ASSERT(mDone);
         switch (syncType)
         {
             case SYNC_SIGNAL:
             {
-                assert(!hasSignal);
-                if (jobList.Num())
+                DEBUG_ASSERT(!mHasSignal);
+                if (mJobList.Num())
                 {
-                    assert(!hasSignal);
-                    signalJobCount.Alloc();
-                    signalJobCount[signalJobCount.Num() - 1].SetValue(jobList.Num() - lastSignalJob);
-                    lastSignalJob = jobList.Num();
-                    job_t& job    = jobList.Alloc();
-                    job.function  = Nop;
-                    job.data      = &JOB_SIGNAL;
-                    hasSignal     = true;
+                    DEBUG_ASSERT(!mHasSignal);
+                    mSignalJobCount.Alloc();
+                    mSignalJobCount[mSignalJobCount.Num() - 1].SetValue(mJobList.Num() - mLastSignalJob);
+                    mLastSignalJob = mJobList.Num();
+                    job_t& job     = mJobList.Alloc();
+                    job.function   = Nop;
+                    job.data       = &JOB_SIGNAL;
+                    mHasSignal     = true;
                 }
                 break;
             }
             case SYNC_SYNCHRONIZE:
             {
-                if (hasSignal)
+                if (mHasSignal)
                 {
-                    job_t& job   = jobList.Alloc();
+                    job_t& job   = mJobList.Alloc();
                     job.function = Nop;
                     job.data     = &JOB_SYNCHRONIZE;
-                    hasSignal    = false;
-                    numSyncs++;
+                    mHasSignal   = false;
+                    mNumSyncs++;
                 }
                 break;
             }
         }
     }
 
-    void JobListThreads::Submit(JobListThreads* waitForJobList, int32 parallelism)
+    void JobListInstance::Submit(JobListInstance* waitForJobList, int32 parallelism)
     {
-        assert(done);
-        assert(numSyncs <= maxSyncs);
-        assert((uint32)jobList.Num() <= maxJobs + numSyncs * 2);
-        assert(fetchLock.GetValue() == 0);
+        DEBUG_ASSERT(mDone);
+        DEBUG_ASSERT(mNumSyncs <= mMaxSyncs);
+        DEBUG_ASSERT((uint32)mJobList.Num() <= mMaxJobs + mNumSyncs * 2);
+        DEBUG_ASSERT(mFetchLock.GetValue() == 0);
 
-        done = false;
-        currentJob.SetValue(0);
+        mDone = false;
+        mCurrentJob.SetValue(0);
 
-        memset(&deferredThreadStats, 0, sizeof(deferredThreadStats));
-        deferredThreadStats.numExecutedJobs  = jobList.Num() - numSyncs * 2;
-        deferredThreadStats.numExecutedSyncs = numSyncs;
-        deferredThreadStats.submitTime       = nsys::Microseconds();
-        deferredThreadStats.startTime        = 0;
-        deferredThreadStats.endTime          = 0;
-        deferredThreadStats.waitTime         = 0;
+        memset(&mDeferredThreadStats, 0, sizeof(mDeferredThreadStats));
+        mDeferredThreadStats.mNumExecutedJobs  = mJobList.Num() - mNumSyncs * 2;
+        mDeferredThreadStats.mNumExecutedSyncs = mNumSyncs;
+        mDeferredThreadStats.mSubmitTime       = g_Microseconds();
+        mDeferredThreadStats.mStartTime        = 0;
+        mDeferredThreadStats.mEndTime          = 0;
+        mDeferredThreadStats.mWaitTime         = 0;
 
-        if (jobList.Num() == 0)
+        if (mJobList.Num() == 0)
         {
             return;
         }
 
         if (waitForJobList != nullptr)
         {
-            waitForGuard = &waitForJobList->doneGuards[waitForJobList->currentDoneGuard];
+            mWaitForGuard = &waitForJobList->mDoneGuards[waitForJobList->mCurrentDoneGuard];
         }
         else
         {
-            waitForGuard = nullptr;
+            mWaitForGuard = nullptr;
         }
 
-        currentDoneGuard = (currentDoneGuard + 1) & (NUM_DONE_GUARDS - 1);
-        doneGuards[currentDoneGuard].SetValue(1);
+        mCurrentDoneGuard = (mCurrentDoneGuard + 1) & (NUM_DONE_GUARDS - 1);
+        mDoneGuards[mCurrentDoneGuard].SetValue(1);
 
-        signalJobCount.Alloc();
-        signalJobCount[signalJobCount.Num() - 1].SetValue(jobList.Num() - lastSignalJob);
+        mSignalJobCount.Alloc();
+        mSignalJobCount[mSignalJobCount.Num() - 1].SetValue(mJobList.Num() - mLastSignalJob);
 
-        job_t& job   = jobList.Alloc();
+        job_t& job   = mJobList.Alloc();
         job.function = Nop;
         job.data     = &JOB_LIST_DONE;
 
-        if (threaded)
+        if (mThreaded)
         {
             // hand over to the manager
-            void SubmitJobList(JobListThreads * jobList, int32 parallelism);
+            void SubmitJobList(JobListInstance * mJobList, int32 parallelism);
             SubmitJobList(this, parallelism);
         }
         else
         {
             // run all the jobs right here
-            threadJobListState_t state(GetVersion());
+            JobListState_t state(GetVersion());
             RunJobs(0, state, false);
         }
     }
 
-    void JobListThreads::Wait()
+    void JobListInstance::Wait()
     {
-        if (jobList.Num() > 0)
+        if (mJobList.Num() > 0)
         {
             // don't lock up but return if the job list was never properly submitted
-            if (!verify(!done && signalJobCount.Num() > 0))
+            if (!DEBUG_VERIFY(!mDone && mSignalJobCount.Num() > 0))
             {
                 return;
             }
 
             bool   waited    = false;
-            uint64 waitStart = nsys::Microseconds();
+            uint64 waitStart = g_Microseconds();
 
-            while (signalJobCount[signalJobCount.Num() - 1].GetValue() > 0)
+            while (mSignalJobCount[mSignalJobCount.Num() - 1].GetValue() > 0)
             {
-                nsys::nthreading::Yield();
+                nthread::g_Yield();
                 waited = true;
             }
-            version.Increment();
-            while (numThreadsExecuting.GetValue() > 0)
+            mVersion.Increment();
+            while (mNumThreadsExecuting.GetValue() > 0)
             {
-                nsys::nthreading::Yield();
+                nthread::g_Yield();
                 waited = true;
             }
 
-            jobList.SetNum(0);
-            signalJobCount.SetNum(0);
-            numSyncs      = 0;
-            lastSignalJob = 0;
+            mJobList.SetNum(0);
+            mSignalJobCount.SetNum(0);
+            mNumSyncs      = 0;
+            mLastSignalJob = 0;
 
-            uint64 waitEnd               = nsys::Microseconds();
-            deferredThreadStats.waitTime = waited ? (waitEnd - waitStart) : 0;
+            uint64 waitEnd                 = g_Microseconds();
+            mDeferredThreadStats.mWaitTime = waited ? (waitEnd - waitStart) : 0;
         }
-        memcpy(&threadStats, &deferredThreadStats, sizeof(threadStats));
-        done = true;
+        memcpy(&mThreadStats, &mDeferredThreadStats, sizeof(mThreadStats));
+        mDone = true;
     }
 
-    bool JobListThreads::TryWait()
+    bool JobListInstance::TryWait()
     {
-        if (jobList.Num() == 0 || signalJobCount[signalJobCount.Num() - 1].GetValue() <= 0)
+        if (mJobList.Num() == 0 || mSignalJobCount[mSignalJobCount.Num() - 1].GetValue() <= 0)
         {
             Wait();
             return true;
@@ -395,65 +493,65 @@ namespace njobs
         return false;
     }
 
-    bool JobListThreads::IsSubmitted() const { return !done; }
+    bool JobListInstance::IsSubmitted() const { return !mDone; }
 
-    uint64 JobListThreads::GetTotalProcessingTimeMicroSec() const
+    uint64 ThreadStats_t::GetTotalProcessingTimeMicroSec() const
     {
         uint64 total = 0;
-        for (int32 unit = 0; unit < MAX_THREADS; unit++)
+        for (int32 unit = 0; unit < CONFIG_MAX_THREADS; unit++)
         {
-            total += threadStats.threadExecTime[unit];
+            total += mThreadExecTime[unit];
         }
         return total;
     }
 
-    uint64 JobListThreads::GetTotalWastedTimeMicroSec() const
+    uint64 ThreadStats_t::GetTotalWastedTimeMicroSec() const
     {
         uint64 total = 0;
-        for (int32 unit = 0; unit < MAX_THREADS; unit++)
+        for (int32 unit = 0; unit < CONFIG_MAX_THREADS; unit++)
         {
-            total += threadStats.threadTotalTime[unit] - threadStats.threadExecTime[unit];
+            total += mThreadTotalTime[unit] - mThreadExecTime[unit];
         }
         return total;
     }
 
-    uint64 JobListThreads::GetUnitProcessingTimeMicroSec(int32 unit) const
+    uint64 ThreadStats_t::GetUnitProcessingTimeMicroSec(int32 unit) const
     {
-        if (unit < 0 || unit >= MAX_THREADS)
+        if (unit < 0 || unit >= CONFIG_MAX_THREADS)
         {
             return 0;
         }
-        return threadStats.threadExecTime[unit];
+        return mThreadExecTime[unit];
     }
 
-    uint64 JobListThreads::GetUnitWastedTimeMicroSec(int32 unit) const
+    uint64 ThreadStats_t::GetUnitWastedTimeMicroSec(int32 unit) const
     {
-        if (unit < 0 || unit >= MAX_THREADS)
+        if (unit < 0 || unit >= CONFIG_MAX_THREADS)
         {
             return 0;
         }
-        return threadStats.threadTotalTime[unit] - threadStats.threadExecTime[unit];
+        return mThreadTotalTime[unit] - mThreadExecTime[unit];
     }
 
 #ifndef _DEBUG
     volatile float    longJobTime;
-    volatile jobRun_t longJobFunc;
+    volatile JobRun_t longJobFunc;
     volatile void*    longJobData;
 #endif
 
-    int32 JobListThreads::RunJobsInternal(uint32 threadNum, threadJobListState_t& state, bool singleJob)
+    int32 JobListInstance::RunJobsInternal(uint32 mThreadNum, JobListState_t& state, bool singleJob)
     {
-        if (state.version != version.GetValue())
+        if (state.mVersion != mVersion.GetValue())
         {
-            // trying to run an old version of this list that is already done
+            // trying to run an old mVersion of this list that is already mDone
             return RUN_DONE;
         }
 
-        assert(threadNum < MAX_THREADS);
+        DEBUG_ASSERT(mThreadNum < CONFIG_MAX_THREADS);
 
-        if (deferredThreadStats.startTime == 0)
+        if (mDeferredThreadStats.mStartTime == 0)
         {
-            deferredThreadStats.startTime = nsys::Microseconds(); // first time any thread is running jobs from this list
+            mDeferredThreadStats.mStartTime = g_Microseconds(); // first time any thread is running jobs from this list
         }
 
         int32 result = RUN_OK;
@@ -461,26 +559,26 @@ namespace njobs
         do
         {
             // run through all signals and syncs before the last job that has been or is being executed
-            // this loop is really an optimization to minimize the time spent in the fetchLock section below
-            for (; state.lastJobIndex < (int32)currentJob.GetValue() && state.lastJobIndex < jobList.Num(); state.lastJobIndex++)
+            // this loop is really an optimization to minimize the time spent in the mFetchLock section below
+            for (; state.lastJobIndex < (int32)mCurrentJob.GetValue() && state.lastJobIndex < mJobList.Num(); state.lastJobIndex++)
             {
-                if (jobList[state.lastJobIndex].data == &JOB_SIGNAL)
+                if (mJobList[state.lastJobIndex].data == &JOB_SIGNAL)
                 {
                     state.signalIndex++;
-                    assert(state.signalIndex < signalJobCount.Num());
+                    DEBUG_ASSERT(state.signalIndex < mSignalJobCount.Num());
                 }
-                else if (jobList[state.lastJobIndex].data == &JOB_SYNCHRONIZE)
+                else if (mJobList[state.lastJobIndex].data == &JOB_SYNCHRONIZE)
                 {
-                    assert(state.signalIndex > 0);
-                    if (signalJobCount[state.signalIndex - 1].GetValue() > 0)
+                    DEBUG_ASSERT(state.signalIndex > 0);
+                    if (mSignalJobCount[state.signalIndex - 1].GetValue() > 0)
                     {
                         // stalled on a synchronization point
                         return (result | RUN_STALLED);
                     }
                 }
-                else if (jobList[state.lastJobIndex].data == &JOB_LIST_DONE)
+                else if (mJobList[state.lastJobIndex].data == &JOB_LIST_DONE)
                 {
-                    if (signalJobCount[signalJobCount.Num() - 1].GetValue() > 0)
+                    if (mSignalJobCount[mSignalJobCount.Num() - 1].GetValue() > 0)
                     {
                         // stalled on a synchronization point
                         return (result | RUN_STALLED);
@@ -489,73 +587,73 @@ namespace njobs
             }
 
             // try to lock to fetch a new job
-            if (fetchLock.Increment() == 1)
+            if (mFetchLock.Increment() == 1)
             {
                 // grab a new job
-                state.nextJobIndex = currentJob.Increment() - 1;
+                state.nextJobIndex = mCurrentJob.Increment() - 1;
 
                 // run through any remaining signals and syncs (this should rarely iterate more than once)
-                for (; state.lastJobIndex <= state.nextJobIndex && state.lastJobIndex < jobList.Num(); state.lastJobIndex++)
+                for (; state.lastJobIndex <= state.nextJobIndex && state.lastJobIndex < mJobList.Num(); state.lastJobIndex++)
                 {
-                    if (jobList[state.lastJobIndex].data == &JOB_SIGNAL)
+                    if (mJobList[state.lastJobIndex].data == &JOB_SIGNAL)
                     {
                         state.signalIndex++;
-                        assert(state.signalIndex < signalJobCount.Num());
+                        DEBUG_ASSERT(state.signalIndex < mSignalJobCount.Num());
                     }
-                    else if (jobList[state.lastJobIndex].data == &JOB_SYNCHRONIZE)
+                    else if (mJobList[state.lastJobIndex].data == &JOB_SYNCHRONIZE)
                     {
-                        assert(state.signalIndex > 0);
-                        if (signalJobCount[state.signalIndex - 1].GetValue() > 0)
+                        DEBUG_ASSERT(state.signalIndex > 0);
+                        if (mSignalJobCount[state.signalIndex - 1].GetValue() > 0)
                         {
                             // return this job to the list
-                            currentJob.Decrement();
+                            mCurrentJob.Decrement();
                             // release the fetch lock
-                            fetchLock.Decrement();
+                            mFetchLock.Decrement();
                             // stalled on a synchronization point
                             return (result | RUN_STALLED);
                         }
                     }
-                    else if (jobList[state.lastJobIndex].data == &JOB_LIST_DONE)
+                    else if (mJobList[state.lastJobIndex].data == &JOB_LIST_DONE)
                     {
-                        if (signalJobCount[signalJobCount.Num() - 1].GetValue() > 0)
+                        if (mSignalJobCount[mSignalJobCount.Num() - 1].GetValue() > 0)
                         {
                             // return this job to the list
-                            currentJob.Decrement();
+                            mCurrentJob.Decrement();
                             // release the fetch lock
-                            fetchLock.Decrement();
+                            mFetchLock.Decrement();
                             // stalled on a synchronization point
                             return (result | RUN_STALLED);
                         }
-                        // decrement the done count
-                        doneGuards[currentDoneGuard].Decrement();
+                        // decrement the mDone count
+                        mDoneGuards[mCurrentDoneGuard].Decrement();
                     }
                 }
                 // release the fetch lock
-                fetchLock.Decrement();
+                mFetchLock.Decrement();
             }
             else
             {
                 // release the fetch lock
-                fetchLock.Decrement();
+                mFetchLock.Decrement();
                 // another thread is fetching right now so consider stalled
                 return (result | RUN_STALLED);
             }
 
-            // if at the end of the job list we're done
-            if (state.nextJobIndex >= jobList.Num())
+            // if at the end of the job list we're mDone
+            if (state.nextJobIndex >= mJobList.Num())
             {
                 return (result | RUN_DONE);
             }
 
             // execute the next job
             {
-                uint64 jobStart = nsys::Microseconds();
+                uint64 jobStart = g_Microseconds();
 
-                jobList[state.nextJobIndex].function(jobList[state.nextJobIndex].data);
-                jobList[state.nextJobIndex].executed = 1;
+                mJobList[state.nextJobIndex].function(mJobList[state.nextJobIndex].data);
+                mJobList[state.nextJobIndex].executed = 1;
 
-                uint64 jobEnd = nsys::Microseconds();
-                deferredThreadStats.threadExecTime[threadNum] += jobEnd - jobStart;
+                uint64 jobEnd = g_Microseconds();
+                mDeferredThreadStats.mThreadExecTime[mThreadNum] += jobEnd - jobStart;
 
 #ifndef _DEBUG
                 if (jobs_longJobMicroSec.GetInteger() > 0)
@@ -563,11 +661,11 @@ namespace njobs
                     if (jobEnd - jobStart > jobs_longJobMicroSec.GetInteger() && GetId() != JOBLIST_UTILITY)
                     {
                         longJobTime             = (jobEnd - jobStart) * (1.0f / 1000.0f);
-                        longJobFunc             = jobList[state.nextJobIndex].function;
-                        longJobData             = jobList[state.nextJobIndex].data;
-                        const char* jobName     = GetJobName(jobList[state.nextJobIndex].function);
+                        longJobFunc             = mJobList[state.nextJobIndex].function;
+                        longJobData             = mJobList[state.nextJobIndex].data;
+                        const char* jobName     = GetJobName(mJobList[state.nextJobIndex].function);
                         const char* jobListName = GetJobListName(GetId());
-                        nlib::Printf("%1.1f milliseconds for a single '%s' job from job list %s on thread %d\n", longJobTime, jobName, jobListName, threadNum);
+                        Printf("%1.1f milliseconds for a single '%s' job from job list %s on thread %d\n", longJobTime, jobName, jobListName, mThreadNum);
                     }
                 }
 #endif
@@ -576,12 +674,12 @@ namespace njobs
             result |= RUN_PROGRESS;
 
             // decrease the job count for the current signal
-            if (signalJobCount[state.signalIndex].Decrement() == 0)
+            if (mSignalJobCount[state.signalIndex].Decrement() == 0)
             {
                 // if this was the very last job of the job list
-                if (state.signalIndex == signalJobCount.Num() - 1)
+                if (state.signalIndex == mSignalJobCount.Num() - 1)
                 {
-                    deferredThreadStats.endTime = nsys::Microseconds();
+                    mDeferredThreadStats.mEndTime = g_Microseconds();
                     return (result | RUN_DONE);
                 }
             }
@@ -591,26 +689,26 @@ namespace njobs
         return result;
     }
 
-    int32 JobListThreads::RunJobs(uint32 threadNum, threadJobListState_t& state, bool singleJob)
+    int32 JobListInstance::RunJobs(uint32 mThreadNum, JobListState_t& state, bool singleJob)
     {
-        uint64 start = nsys::Microseconds();
+        uint64 start = g_Microseconds();
 
-        numThreadsExecuting.Increment();
+        mNumThreadsExecuting.Increment();
 
-        int32 result = RunJobsInternal(threadNum, state, singleJob);
+        int32 result = RunJobsInternal(mThreadNum, state, singleJob);
 
-        numThreadsExecuting.Decrement();
+        mNumThreadsExecuting.Decrement();
 
-        deferredThreadStats.threadTotalTime[threadNum] += nsys::Microseconds() - start;
+        mDeferredThreadStats.mThreadTotalTime[mThreadNum] += g_Microseconds() - start;
 
         return result;
     }
 
-    bool JobListThreads::WaitForOtherJobList()
+    bool JobListInstance::WaitForOtherJobList()
     {
-        if (waitForGuard != nullptr)
+        if (mWaitForGuard != nullptr)
         {
-            if (waitForGuard->GetValue() > 0)
+            if (mWaitForGuard->GetValue() > 0)
             {
                 return true;
             }
@@ -618,158 +716,151 @@ namespace njobs
         return false;
     }
 
-    JobList::JobList(nlib::Alloc* allocator, jobListId_t id, const char* name, jobListPriority_t priority, uint32 maxJobs, uint32 maxSyncs, const uint32 color)
-        : color(color)
+    JobList::JobList(Alloc* allocator, JobListId_t id, const char* name, EJobListPriority_t priority, uint32 mMaxJobs, uint32 mMaxSyncs, const uint32 color)
+        : mColor(color)
     {
-        assert(priority > JOBLIST_PRIORITY_NONE);
-        //this->jobListThreads = new (TAG_JOBLIST) JobListThreads(id, priority, maxJobs, maxSyncs);
-        this->jobListThreads = allocator->Construct<JobListThreads>(TAG_JOBLIST, allocator, id, name, priority, maxJobs, maxSyncs);
+        DEBUG_ASSERT(priority > JOBLIST_PRIORITY_NONE);
+        // this->mJobListInstance = new (TAG_JOBLIST) JobListInstance(id, priority, mMaxJobs, mMaxSyncs);
+        this->mJobListInstance = allocator->Construct<JobListInstance>(TAG_JOBLIST, allocator, id, name, priority, mMaxJobs, mMaxSyncs);
     }
 
-    JobList::~JobList() { delete jobListThreads; }
+    JobList::~JobList() { delete mJobListInstance; }
 
-    void JobList::AddJob(jobRun_t function, void* data)
+    void JobList::AddJob(JobRun_t function, void* data)
     {
-        assert(IsRegisteredJob(function));
-        jobListThreads->AddJob(function, data);
+        DEBUG_ASSERT(this->mJobListInstance->mJobsRegister->IsRegisteredJob(function));
+        mJobListInstance->AddJob(function, data);
     }
 
-    void JobList::InsertSyncPoint(jobSyncType_t syncType) { jobListThreads->InsertSyncPoint(syncType); }
+    void JobList::InsertSyncPoint(EJobSyncType_t syncType) { mJobListInstance->InsertSyncPoint(syncType); }
 
     void JobList::Wait()
     {
-        if (jobListThreads != nullptr)
+        if (mJobListInstance != nullptr)
         {
-            jobListThreads->Wait();
+            mJobListInstance->Wait();
         }
     }
 
     bool JobList::TryWait()
     {
-        bool done = true;
-        if (jobListThreads != nullptr)
+        bool mDone = true;
+        if (mJobListInstance != nullptr)
         {
-            done &= jobListThreads->TryWait();
+            mDone &= mJobListInstance->TryWait();
         }
-        return done;
+        return mDone;
     }
 
     void JobList::Submit(JobList* waitForJobList, int32 parallelism)
     {
-        assert(waitForJobList != this);
-        jobListThreads->Submit((waitForJobList != nullptr) ? waitForJobList->jobListThreads : nullptr, parallelism);
+        DEBUG_ASSERT(waitForJobList != this);
+        mJobListInstance->Submit((waitForJobList != nullptr) ? waitForJobList->mJobListInstance : nullptr, parallelism);
     }
 
-    bool JobList::IsSubmitted() const { return jobListThreads->IsSubmitted(); }
-
-    uint32 JobList::GetNumExecutedJobs() const { return jobListThreads->GetNumExecutedJobs(); }
-    uint32 JobList::GetNumSyncs() const { return jobListThreads->GetNumSyncs(); }
-
-    uint64 JobList::GetSubmitTimeMicroSec() const { return jobListThreads->GetSubmitTimeMicroSec(); }
-    uint64 JobList::GetStartTimeMicroSec() const { return jobListThreads->GetStartTimeMicroSec(); }
-    uint64 JobList::GetFinishTimeMicroSec() const { return jobListThreads->GetFinishTimeMicroSec(); }
-    uint64 JobList::GetWaitTimeMicroSec() const { return jobListThreads->GetWaitTimeMicroSec(); }
-    uint64 JobList::GetTotalProcessingTimeMicroSec() const { return jobListThreads->GetTotalProcessingTimeMicroSec(); }
-    uint64 JobList::GetTotalWastedTimeMicroSec() const { return jobListThreads->GetTotalWastedTimeMicroSec(); }
-    uint64 JobList::GetUnitProcessingTimeMicroSec(int32 unit) const { return jobListThreads->GetUnitProcessingTimeMicroSec(unit); }
-    uint64 JobList::GetUnitWastedTimeMicroSec(int32 unit) const { return jobListThreads->GetUnitWastedTimeMicroSec(unit); }
-
-    jobListId_t JobList::GetId() const { return jobListThreads->GetId(); }
+    bool                 JobList::IsSubmitted() const { return mJobListInstance->IsSubmitted(); }
+    JobListId_t          JobList::GetId() const { return mJobListInstance->GetId(); }
+    ThreadStats_t const* JobList::GetStats() const { return mJobListInstance->GetThreadStats(); }
 
     const int32 JOB_THREAD_STACK_SIZE = 256 * 1024; // same size as the SPU local store
 
     struct threadJobList_t
     {
-        JobListThreads* jobList;
-        int32           version;
+        JobListInstance* mJobList;
+        int32            mVersion;
     };
 
-    class JobThread : public nsys::nthreading::Thread
+    class JobThread : public nthread::Thread
     {
     public:
         JobThread();
         ~JobThread();
 
-        void Start(nsys::core_t core, uint32 threadNum);
+        void Start(nthread::core_t _core, uint32 _threadNum);
 
-        void AddJobList(JobListThreads* jobList);
+        void AddJobList(JobListInstance* mJobList);
 
     private:
-        threadJobList_t jobLists[MAX_JOBLISTS]; // cyclic buffer with job lists
-        uint32          firstJobList;           // index of the last job list the thread grabbed
-        uint32          lastJobList;            // index where the next job list to work on will be added
-        nsys::nthreading::Mutex      addJobMutex;
-
-        uint32 threadNum;
+        threadJobList_t mJobLists[CONFIG_MAX_JOBLISTS]; // cyclic buffer with job lists
+        uint32          mFirstJobList;                  // index of the last job list the thread grabbed
+        uint32          mLastJobList;                   // index where the next job list to work on will be added
+        nthread::Mutex  mAddJobMutex;
+        char            mName[64];
+        uint32          mThreadNum;
+        bool*           mJobsPrioritize;
 
         virtual int32 Run();
     };
 
     JobThread::JobThread()
-        : firstJobList(0)
-        , lastJobList(0)
-        , threadNum(0)
+        : mFirstJobList(0)
+        , mLastJobList(0)
+        , mThreadNum(0)
     {
     }
 
     JobThread::~JobThread() {}
 
-    void JobThread::Start(nsys::core_t core, uint32 threadNum)
+    void JobThread::Start(nthread::core_t _core, uint32 _threadNum)
     {
-        this->threadNum = threadNum;
-        StartWorkerThread(va("JobListProcessor_%d", threadNum), core, nsys::nthreading::PRIORITY_NORMAL, JOB_THREAD_STACK_SIZE);
+        this->mThreadNum = _threadNum;
+        strcpy(mName, "JobListProcessor_00");
+        itoa(_threadNum, mName + strlen(mName), 10);
+        StartWorkerThread(mName, _core, nthread::PRIORITY_NORMAL, JOB_THREAD_STACK_SIZE);
     }
 
-    void JobThread::AddJobList(JobListThreads* jobList)
+    void JobThread::AddJobList(JobListInstance* mJobList)
     {
-        // must lock because multiple threads may try to add new job lists at the same time
-        addJobMutex.Lock();
-        // wait until there is space available because in rare cases multiple versions of the same job lists may still be queued
-        while (lastJobList - firstJobList >= MAX_JOBLISTS)
+        // must lock because multiple mThreads may try to add new job lists at the same time
+        mAddJobMutex.Lock();
         {
-            nsys::nthreading::Yield();
+            // wait until there is space available because in rare cases multiple versions of the same job lists may still be queued
+            while (mLastJobList - mFirstJobList >= CONFIG_MAX_JOBLISTS)
+            {
+                nthread::g_Yield();
+            }
+            DEBUG_ASSERT(mLastJobList - mFirstJobList < CONFIG_MAX_JOBLISTS);
+            mJobLists[mLastJobList & (CONFIG_MAX_JOBLISTS - 1)].mJobList = mJobList;
+            mJobLists[mLastJobList & (CONFIG_MAX_JOBLISTS - 1)].mVersion = mJobList->GetVersion();
+            mLastJobList++;
         }
-        assert(lastJobList - firstJobList < MAX_JOBLISTS);
-        jobLists[lastJobList & (MAX_JOBLISTS - 1)].jobList = jobList;
-        jobLists[lastJobList & (MAX_JOBLISTS - 1)].version = jobList->GetVersion();
-        lastJobList++;
-        addJobMutex.Unlock();
+        mAddJobMutex.Unlock();
     }
 
     int32 JobThread::Run()
     {
-        threadJobListState_t threadJobListState[MAX_JOBLISTS];
-        int32                numJobLists        = 0;
-        int32                lastStalledJobList = -1;
+        JobListState_t threadJobListState[CONFIG_MAX_JOBLISTS];
+        int32          numJobLists        = 0;
+        int32          lastStalledJobList = -1;
 
         while (!IsTerminating())
         {
             // fetch any new job lists and add them to the local list
-            if (numJobLists < MAX_JOBLISTS && firstJobList < lastJobList)
+            if (numJobLists < CONFIG_MAX_JOBLISTS && mFirstJobList < mLastJobList)
             {
-                threadJobListState[numJobLists].jobList      = jobLists[firstJobList & (MAX_JOBLISTS - 1)].jobList;
-                threadJobListState[numJobLists].version      = jobLists[firstJobList & (MAX_JOBLISTS - 1)].version;
+                threadJobListState[numJobLists].mJobList     = mJobLists[mFirstJobList & (CONFIG_MAX_JOBLISTS - 1)].mJobList;
+                threadJobListState[numJobLists].mVersion     = mJobLists[mFirstJobList & (CONFIG_MAX_JOBLISTS - 1)].mVersion;
                 threadJobListState[numJobLists].signalIndex  = 0;
                 threadJobListState[numJobLists].lastJobIndex = 0;
                 threadJobListState[numJobLists].nextJobIndex = -1;
                 numJobLists++;
-                firstJobList++;
+                mFirstJobList++;
             }
             if (numJobLists == 0)
             {
                 break;
             }
 
-            int32             currentJobList = 0;
-            jobListPriority_t priority       = JOBLIST_PRIORITY_NONE;
+            int32              currentJobList = 0;
+            EJobListPriority_t priority       = JOBLIST_PRIORITY_NONE;
             if (lastStalledJobList < 0)
             {
                 // find the job list with the highest priority
                 for (int32 i = 0; i < numJobLists; i++)
                 {
-                    if (threadJobListState[i].jobList->GetPriority() > priority && !threadJobListState[i].jobList->WaitForOtherJobList())
+                    if (threadJobListState[i].mJobList->GetPriority() > priority && !threadJobListState[i].mJobList->WaitForOtherJobList())
                     {
-                        priority       = threadJobListState[i].jobList->GetPriority();
+                        priority       = threadJobListState[i].mJobList->GetPriority();
                         currentJobList = i;
                     }
                 }
@@ -778,12 +869,12 @@ namespace njobs
             {
                 // try to hide the stall with a job from a list that has equal or higher priority
                 currentJobList = lastStalledJobList;
-                priority       = threadJobListState[lastStalledJobList].jobList->GetPriority();
+                priority       = threadJobListState[lastStalledJobList].mJobList->GetPriority();
                 for (int32 i = 0; i < numJobLists; i++)
                 {
-                    if (i != lastStalledJobList && threadJobListState[i].jobList->GetPriority() >= priority && !threadJobListState[i].jobList->WaitForOtherJobList())
+                    if (i != lastStalledJobList && threadJobListState[i].mJobList->GetPriority() >= priority && !threadJobListState[i].mJobList->WaitForOtherJobList())
                     {
-                        priority       = threadJobListState[i].jobList->GetPriority();
+                        priority       = threadJobListState[i].mJobList->GetPriority();
                         currentJobList = i;
                     }
                 }
@@ -791,12 +882,12 @@ namespace njobs
 
             // if the priority is high then try to run through the whole list to reduce the overhead
             // otherwise run a single job and re-evaluate priorities for the next job
-            bool singleJob = (priority == JOBLIST_PRIORITY_HIGH) ? false : jobs_prioritize.GetBool();
+            bool singleJob = (priority == JOBLIST_PRIORITY_HIGH) ? false : ((mJobsPrioritize != nullptr) ? *mJobsPrioritize : false);
 
             // try running one or more jobs from the current job list
-            int32 result = threadJobListState[currentJobList].jobList->RunJobs(threadNum, threadJobListState[currentJobList], singleJob);
+            int32 result = threadJobListState[currentJobList].mJobList->RunJobs(mThreadNum, threadJobListState[currentJobList], singleJob);
 
-            if ((result & JobListThreads::RUN_DONE) != 0)
+            if ((result & JobListInstance::RUN_DONE) != 0)
             {
                 // done with this job list so remove it from the local list
                 for (int32 i = currentJobList; i < numJobLists - 1; i++)
@@ -806,14 +897,14 @@ namespace njobs
                 numJobLists--;
                 lastStalledJobList = -1;
             }
-            else if ((result & JobListThreads::RUN_STALLED) != 0)
+            else if ((result & JobListInstance::RUN_STALLED) != 0)
             {
                 // yield when stalled on the same job list again without making any progress
                 if (currentJobList == lastStalledJobList)
                 {
-                    if ((result & JobListThreads::RUN_PROGRESS) == 0)
+                    if ((result & JobListInstance::RUN_PROGRESS) == 0)
                     {
-                        nsys::nthreading::Yield();
+                        nthread::g_Yield();
                     }
                 }
                 lastStalledJobList = currentJobList;
@@ -826,24 +917,16 @@ namespace njobs
         return 0;
     }
 
-#define MAX_JOB_THREADS 2
-#define NUM_JOB_THREADS "2"
-#define JOB_THREAD_CORES                                                                                                                                                                                                                                \
-    {                                                                                                                                                                                                                                                   \
-        CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, \
-            CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY, CORE_ANY                                                                                                                                                              \
-    }
-
     class JobsManagerLocal : public JobsManager
     {
     public:
         virtual ~JobsManagerLocal() {}
 
-        virtual void Init(int32 jobs_numThreads);
+        virtual void Init(Alloc* allocator, int32 jobs_numThreads);
         virtual void Shutdown();
 
-        virtual JobList* AllocJobList(const char* name, jobListPriority_t priority, uint32 maxJobs, uint32 maxSyncs, const uint32 color);
-        virtual void     FreeJobList(JobList* jobList);
+        virtual JobList* AllocJobList(const char* name, EJobListPriority_t priority, uint32 mMaxJobs, uint32 mMaxSyncs, const uint32 color);
+        virtual void     FreeJobList(JobList* mJobList);
 
         virtual int32    GetNumJobLists() const;
         virtual int32    GetNumFreeJobLists() const;
@@ -853,52 +936,62 @@ namespace njobs
 
         virtual void WaitForAllJobLists();
 
-        void Submit(JobListThreads* jobList, int32 parallelism);
+        virtual bool        IsRegisteredJob(JobRun_t function) const;
+        virtual void        RegisterJob(JobRun_t function, const char* name);
+        virtual const char* GetJobName(JobRun_t function) const;
+
+        void Submit(JobListInstance* mJobList, int32 parallelism);
 
     private:
-        JobThread                                threads[MAX_JOB_THREADS];
-        uint32                                   maxThreads;
-        int32                                    numPhysicalCpuCores;
-        int32                                    numLogicalCpuCores;
-        int32                                    numCpuPackages;
-        nlib::StaticList<JobList*, MAX_JOBLISTS> jobLists;
+        Alloc*                                    mAllocator;
+        JobThread                                 mThreads[CONFIG_MAX_JOBTHREADS];
+        uint32                                    mMaxThreads;
+        int32                                     mNumPhysicalCpuCores;
+        int32                                     mNumLogicalCpuCores;
+        int32                                     mNumCpuPackages;
+        StaticList<JobList*, CONFIG_MAX_JOBLISTS> mJobLists;
+        JobListRegister                           mJobListRegister;
+        JobsRegister                              mJobsRegister;
     };
 
     JobsManagerLocal g_JobManagerLocal;
     JobsManager*     g_JobManager = &g_JobManagerLocal;
 
-    void SubmitJobList(JobListThreads* jobList, int32 parallelism) { g_JobManagerLocal.Submit(jobList, parallelism); }
+    void SubmitJobList(JobListInstance* mJobList, int32 parallelism) { g_JobManagerLocal.Submit(mJobList, parallelism); }
 
-    void JobsManagerLocal::Init(int32 jobs_numThreads)
+    void JobsManagerLocal::Init(Alloc* allocator, int32 jobs_numThreads)
     {
-        nsys::CPUCount(numPhysicalCpuCores, numLogicalCpuCores, numCpuPackages);
-        for (int32 i = 0; i < MAX_JOB_THREADS; i++)
+        mAllocator = allocator;
+
+        g_CPUCount(mNumPhysicalCpuCores, mNumLogicalCpuCores, mNumCpuPackages);
+        for (int32 i = 0; i < CONFIG_MAX_JOBTHREADS; i++)
         {
-            threads[i].Start(nsys::nthreading::ThreadToCore(i), i);
+            mThreads[i].Start(nthread::g_ThreadToCore(i), i);
         }
-        maxThreads = jobs_numThreads;
+        mMaxThreads = jobs_numThreads;
     }
 
     void JobsManagerLocal::Shutdown()
     {
-        for (int32 i = 0; i < MAX_JOB_THREADS; i++)
+        for (int32 i = 0; i < CONFIG_MAX_JOBTHREADS; i++)
         {
-            threads[i].StopThread();
+            mThreads[i].StopThread();
         }
     }
 
-    JobList* JobsManagerLocal::AllocJobList(const char* name, jobListPriority_t priority, uint32 maxJobs, uint32 maxSyncs, const uint32 color)
+    JobList* JobsManagerLocal::AllocJobList(const char* name, EJobListPriority_t priority, uint32 mMaxJobs, uint32 mMaxSyncs, const uint32 color)
     {
-        for (int32 i = 0; i < jobLists.Num(); i++)
+        for (int32 i = 0; i < mJobLists.Num(); i++)
         {
-            if (jobLists[i]->GetName() == name)
+            if (mJobLists[i]->GetName() == name)
             {
-                // idStudio may cause job lists to be allocated multiple times
+                // certain 'users' may cause job lists to be allocated multiple times
             }
         }
 
-        JobList* jobList = new (TAG_JOBLIST) JobList(id, priority, maxJobs, maxSyncs, color);
-        jobLists.Append(jobList);
+        JobListId_t id      = mJobLists.Num();
+        JobList*    jobList = mAllocator->Construct<JobList>(TAG_JOBLIST, mAllocator, id, name, priority, mMaxJobs, mMaxSyncs, color);
+        mJobLists.Append(jobList);
         return jobList;
     }
 
@@ -908,69 +1001,104 @@ namespace njobs
         {
             return;
         }
+
         // wait for all job threads to finish because job list deletion is not thread safe
-        for (uint32 i = 0; i < maxThreads; i++)
+        for (uint32 i = 0; i < mMaxThreads; i++)
         {
-            threads[i].WaitForThread();
+            mThreads[i].WaitForThread();
         }
-        int32 index = jobLists.FindIndex(jobList);
-        assert(index >= 0 && jobLists[index] == jobList);
-        jobLists[index]->Wait();
-        delete jobLists[index];
-        jobLists.RemoveIndexFast(index);
+
+        int32 index = mJobLists.FindIndex(jobList);
+        DEBUG_ASSERT(index >= 0 && mJobLists[index] == jobList);
+        mJobLists[index]->Wait();
+        mAllocator->Destruct<JobList>(jobList);
+        mJobLists.RemoveIndexFast(index);
     }
 
-    int32    JobsManagerLocal::GetNumJobLists() const { return jobLists.Num(); }
-    int32    JobsManagerLocal::GetNumFreeJobLists() const { return MAX_JOBLISTS - jobLists.Num(); }
-    JobList* JobsManagerLocal::GetJobList(int32 index) { return jobLists[index]; }
-    int32    JobsManagerLocal::GetNumProcessingUnits() { return maxThreads; }
+    int32    JobsManagerLocal::GetNumJobLists() const { return mJobLists.Num(); }
+    int32    JobsManagerLocal::GetNumFreeJobLists() const { return CONFIG_MAX_JOBLISTS - mJobLists.Num(); }
+    JobList* JobsManagerLocal::GetJobList(int32 index) { return mJobLists[index]; }
+    int32    JobsManagerLocal::GetNumProcessingUnits() { return mMaxThreads; }
 
     void JobsManagerLocal::WaitForAllJobLists()
     {
-        // wait for all job lists to complete
-        for (int32 i = 0; i < jobLists.Num(); i++)
+        for (int32 i = 0; i < mJobLists.Num(); i++)
         {
-            jobLists[i]->Wait();
+            mJobLists[i]->Wait();
         }
     }
 
-    void JobsManagerLocal::Submit(JobListThreads* jobList, int32 parallelism)
+    void JobsManagerLocal::Submit(JobListInstance* mJobList, int32 parallelism)
     {
-        // determine the number of threads to use
-        int32 numThreads = maxThreads;
-        if (parallelism == JOBLIST_PARALLELISM_DEFAULT)
+        if (parallelism > CONFIG_MAX_JOBTHREADS)
+            parallelism = CONFIG_MAX_JOBTHREADS;
+
+        int32 numThreads = mMaxThreads;
+        switch (parallelism)
         {
-            numThreads = maxThreads;
+            case JOBLIST_PARALLELISM_DEFAULT: numThreads = mMaxThreads; break;
+            case JOBLIST_PARALLELISM_MAX_CORES: numThreads = mNumLogicalCpuCores; break;
+            case JOBLIST_PARALLELISM_MAX_THREADS: numThreads = CONFIG_MAX_JOBTHREADS; break;
+            default: numThreads = parallelism; break;
         }
-        else if (parallelism == JOBLIST_PARALLELISM_MAX_CORES)
+
+        if (numThreads > 0)
         {
-            numThreads = numLogicalCpuCores;
-        }
-        else if (parallelism == JOBLIST_PARALLELISM_MAX_THREADS)
-        {
-            numThreads = MAX_JOB_THREADS;
-        }
-        else if (parallelism > MAX_JOB_THREADS)
-        {
-            numThreads = MAX_JOB_THREADS;
+            for (int32 i = 0; i < numThreads; i++)
+            {
+                mThreads[i].AddJobList(mJobList);
+                mThreads[i].SignalWork();
+            }
         }
         else
         {
-            numThreads = parallelism;
+            JobListState_t state(mJobList->GetVersion());
+            mJobList->RunJobs(0, state, false);
         }
+    }
 
-        if (numThreads <= 0)
-        {
-            threadJobListState_t state(jobList->GetVersion());
-            jobList->RunJobs(0, state, false);
-            return;
-        }
+    bool        JobsManagerLocal::IsRegisteredJob(JobRun_t function) const { return mJobsRegister.IsRegisteredJob(function); }
+    void        JobsManagerLocal::RegisterJob(JobRun_t function, const char* name) { mJobsRegister.RegisterJob(function, name); }
+    const char* JobsManagerLocal::GetJobName(JobRun_t function) const { return mJobsRegister.GetJobNameByFunction(function); }
 
-        for (int32 i = 0; i < numThreads; i++)
+    int32 JobsRegister::Count() const { return mNumRegisteredJobs; }
+
+    void        JobsRegister::RegisterJob(JobRun_t function, const char* name)
+    {
+        mRegisteredJobFuncs[mNumRegisteredJobs] = function;
+        mRegisteredJobNames[mNumRegisteredJobs] = name;
+        mNumRegisteredJobs++;
+    }
+
+    bool        JobsRegister::IsRegisteredJob(JobRun_t function) const
+    {
+        for (int32 i = 0; i < mNumRegisteredJobs; i++)
         {
-            threads[i].AddJobList(jobList);
-            threads[i].SignalWork();
+            if (mRegisteredJobFuncs[i] == function)
+            {
+                return true;
+            }
         }
+        return false;
+    }
+
+    const char* JobsRegister::GetJobNameByIndex(int index) const
+    {
+        if (index >= 0 && index < mNumRegisteredJobs)
+            return mRegisteredJobNames[index];
+        return "unknown";
+    }
+
+    const char* JobsRegister::GetJobNameByFunction(JobRun_t function) const
+    {
+        for (int32 i = 0; i < mNumRegisteredJobs; i++)
+        {
+            if (mRegisteredJobFuncs[i] == function)
+            {
+                return mRegisteredJobNames[i];
+            }
+        }
+        return "unknown";
     }
 
 } // namespace njobs
