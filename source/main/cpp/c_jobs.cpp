@@ -836,9 +836,10 @@ namespace cjobs
     class JobsManagerLocal : public JobsManager
     {
     public:
+        JobsManagerLocal(Alloc* allocator);
         virtual ~JobsManagerLocal() {}
 
-        virtual void Init(Alloc* allocator, int32 jobs_numThreads);
+        virtual void Init(csys::core_t threads[], int32 num);
         virtual void Shutdown();
 
         virtual JobList* AllocJobList(EJobListPriority_t priority, uint32 mMaxJobs, uint32 mMaxSyncs, const uint32 color, const char* name);
@@ -858,6 +859,11 @@ namespace cjobs
 
         void Submit(JobListInstance* mJobList, int32 parallelism);
 
+        void* operator new(uint64 num_bytes, void* mem) { return mem; }
+        void  operator delete(void* mem, void*) {}
+        void* operator new(uint64 num_bytes) noexcept { return nullptr; }
+        void  operator delete(void* mem) {}
+
     private:
         Alloc*          mAllocator;
         JobThread       mThreads[CONFIG_MAX_JOBTHREADS];
@@ -870,23 +876,28 @@ namespace cjobs
         JobsRegister    mJobsRegister;
     };
 
-    JobsManagerLocal g_JobManagerLocal;
-    JobsManager*     g_JobManager = &g_JobManagerLocal;
-
-    void SubmitJobList(JobListInstance* mJobList, int32 parallelism) { g_JobManagerLocal.Submit(mJobList, parallelism); }
-
-    void JobsManagerLocal::Init(Alloc* allocator, int32 jobs_numThreads)
+    JobsManagerLocal::JobsManagerLocal(Alloc* allocator) 
+        : mAllocator(allocator)
     {
-        mAllocator = allocator;
-        mJobLists.Init(allocator);
+
+    }
+
+    JobsManager* CreateJobManager(Alloc* allocator) 
+    { 
+        JobsManagerLocal* manager = allocator->Construct<JobsManagerLocal>(TAG_JOBMANAGER, allocator);
+        return manager;
+    }
+
+    void JobsManagerLocal::Init(csys::core_t threads[], int32 num)
+    {
+        mJobLists.Init(mAllocator);
         mJobLists.SetCapacity(CONFIG_MAX_JOBLISTS);
 
-        csys::SysCPUCount(mNumPhysicalCpuCores, mNumLogicalCpuCores, mNumCpuPackages);
-        for (int32 i = 0; i < CONFIG_MAX_JOBTHREADS; i++)
+        for (int32 i = 0; i < num; i++)
         {
-            mThreads[i].Start(csys::SysThreadToCore(i), i);
+            mThreads[i].Start(threads[i], i);
         }
-        mMaxThreads = jobs_numThreads;
+        mMaxThreads = num;
     }
 
     void JobsManagerLocal::Shutdown()

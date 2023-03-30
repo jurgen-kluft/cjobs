@@ -1,6 +1,8 @@
 #ifndef __CJOBS_H__
 #define __CJOBS_H__
 
+#include "cjobs/private/c_sys.h"
+
 namespace cjobs
 {
     typedef int                int32;
@@ -10,7 +12,8 @@ namespace cjobs
     
     enum EAllocTags
     {
-        TAG_JOBLIST = 0x4a4c4f42 // "JOBL"
+        TAG_JOBLIST = 0x4a4c4f42, // "JOBL"
+        TAG_JOBMANAGER = 0x4a4d4e47 // "JMNG"
     };
 
     class Alloc
@@ -134,7 +137,7 @@ namespace cjobs
     public:
         virtual ~JobsManager() {}
 
-        virtual void Init(Alloc* allocator, int32 jobs_numThreads) = 0;
+        virtual void Init(csys::core_t threads[], int32 num) = 0;
         virtual void Shutdown()                                    = 0;
 
         virtual JobList* AllocJobList(EJobListPriority_t priority, uint32 maxJobs, uint32 maxSyncs, const uint32 color, const char* name) = 0;
@@ -152,7 +155,7 @@ namespace cjobs
         virtual const char* GetJobName(JobRun_t function) const              = 0;
     };
 
-    extern JobsManager* g_JobManager;
+    JobsManager* CreateJobManager(Alloc* allocator);
 
 } // namespace cjobs
 

@@ -14,6 +14,7 @@ namespace cjobs
             , mMoreWorkToDo(false)
             , mSignalWorkerDone(true)
         {
+            mName[0] = '\0';
         }
 
         SysThread::~SysThread()
@@ -173,8 +174,8 @@ namespace cjobs
 
         int32 SysThread::Run()
         {
-            // The Run() is not pure virtual because on destruction of a derived class
-            // the virtual function pointer will be set to NULL before the SysThread
+            // The Run() is not a pure virtual function because on destruction of a derived
+            // class the virtual function pointer will be set to NULL before the SysThread
             // destructor actually stops the thread.
             return 0;
         }

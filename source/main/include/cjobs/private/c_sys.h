@@ -66,9 +66,6 @@ namespace cjobs
 
         void SysYield();
 
-        void   SysCPUCount(int32& logicalNum, int32& coreNum, int32& packageNum);
-        core_t SysThreadToCore(int32 thread);
-
         const int32 MAX_CRITICAL_SECTIONS = 4;
 
         enum
@@ -82,7 +79,11 @@ namespace cjobs
         class SysMutex
         {
         public:
-            SysMutex() { SysMutexCreate(mHandle); }
+            SysMutex()
+                : mHandle(0)
+            {
+                SysMutexCreate(mHandle);
+            }
             ~SysMutex() { SysMutexDestroy(mHandle); }
 
             bool Lock(bool blocking = true) { return SysMutexLock(mHandle, blocking); }
@@ -92,7 +93,7 @@ namespace cjobs
             mutexHandle_t mHandle;
 
         private:
-            SysMutex(const SysMutex& s) {}
+            SysMutex(const SysMutex& s) : mHandle(0) {}
             void operator=(const SysMutex& s) {}
         };
 
@@ -115,7 +116,11 @@ namespace cjobs
         public:
             static const int32 WAIT_INFINITE = -1;
 
-            SysSignal(bool manualReset = false) { SysSignalCreate(mHandle, manualReset); }
+            SysSignal(bool manualReset = false)
+                : mHandle(0)
+            {
+                SysSignalCreate(mHandle, manualReset);
+            }
             ~SysSignal() { SysSignalDestroy(mHandle); }
 
             void Raise() { SysSignalRaise(mHandle); }
@@ -130,7 +135,10 @@ namespace cjobs
             signalHandle_t mHandle;
 
         private:
-            SysSignal(const SysSignal& s) {}
+            SysSignal(const SysSignal& s)
+                : mHandle(0)
+            {
+            }
             void operator=(const SysSignal& s) {}
         };
 
@@ -205,7 +213,6 @@ namespace cjobs
 
             static int32 ThreadProc(SysThread* thread);
 
-            SysThread(const SysThread& s) {}
             void operator=(const SysThread& s) {}
         };
 

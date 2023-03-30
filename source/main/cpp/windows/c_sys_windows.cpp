@@ -90,7 +90,9 @@ namespace cjobs
                 // Error("CreateThread error: %i", GetLastError());
                 return (threadHandle_t)0;
             }
+
             SysSetThreadName(threadId, name);
+
             if (priority == PRIORITY_HIGHEST)
             {
                 SetThreadPriority((HANDLE)handle, THREAD_PRIORITY_HIGHEST); //  we better sleep enough to do this
@@ -109,6 +111,7 @@ namespace cjobs
             }
 
             // Under Windows, we don't set the thread affinity and let the OS deal with scheduling
+            // SetThreadAffinityMask((HANDLE)handle, 1<<core);
 
             return (threadHandle_t)handle;
         }
