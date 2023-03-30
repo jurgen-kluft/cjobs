@@ -31,43 +31,42 @@ namespace cjobs
         typedef uint64 signalHandle_t;
         typedef uint64 mutexHandle_t;
 
-        threadId_t     GetCurrentThreadID();
-        threadHandle_t GetCurrentThread();
+        threadId_t     SysGetCurrentThreadID();
+        threadHandle_t SysGetCurrentThread();
 
         typedef uint32 (*ThreadFunc_t)(void*);
-        threadHandle_t CreateThread(ThreadFunc_t function, void* parms, EPriority priority, const char* name, core_t core, int32 stackSize = DEFAULT_THREAD_STACK_SIZE, bool suspended = false);
+        threadHandle_t SysCreateThread(ThreadFunc_t function, void* parms, EPriority priority, const char* name, core_t core, int32 stackSize = DEFAULT_THREAD_STACK_SIZE, bool suspended = false);
+        void           SysWaitForThread(threadHandle_t threadHandle);
+        void           SysDestroyThread(threadHandle_t threadHandle);
+        void           SysSetCurrentThreadName(const char* name);
 
-        void WaitForThread(threadHandle_t threadHandle);
-        void DestroyThread(threadHandle_t threadHandle);
-        void SetCurrentThreadName(const char* name);
+        void SysSignalCreate(signalHandle_t& handle, bool manualReset);
+        void SysSignalDestroy(signalHandle_t& handle);
+        void SysSignalRaise(signalHandle_t& handle);
+        void SysSignalClear(signalHandle_t& handle);
+        bool SysSignalWait(signalHandle_t& handle, int32 timeout);
 
-        void SignalCreate(signalHandle_t& handle, bool manualReset);
-        void SignalDestroy(signalHandle_t& handle);
-        void SignalRaise(signalHandle_t& handle);
-        void SignalClear(signalHandle_t& handle);
-        bool SignalWait(signalHandle_t& handle, int32 timeout);
+        void SysMutexCreate(mutexHandle_t& handle);
+        void SysMutexDestroy(mutexHandle_t& handle);
+        bool SysMutexLock(mutexHandle_t& handle, bool blocking);
+        void SysMutexUnlock(mutexHandle_t& handle);
 
-        void MutexCreate(mutexHandle_t& handle);
-        void MutexDestroy(mutexHandle_t& handle);
-        bool MutexLock(mutexHandle_t& handle, bool blocking);
-        void MutexUnlock(mutexHandle_t& handle);
+        interlockedInt_t SysInterlockedIncrement(interlockedInt_t& value);
+        interlockedInt_t SysInterlockedDecrement(interlockedInt_t& value);
 
-        interlockedInt_t InterlockedIncrement(interlockedInt_t& value);
-        interlockedInt_t InterlockedDecrement(interlockedInt_t& value);
+        interlockedInt_t SysInterlockedAdd(interlockedInt_t& value, interlockedInt_t i);
+        interlockedInt_t SysInterlockedSub(interlockedInt_t& value, interlockedInt_t i);
 
-        interlockedInt_t InterlockedAdd(interlockedInt_t& value, interlockedInt_t i);
-        interlockedInt_t InterlockedSub(interlockedInt_t& value, interlockedInt_t i);
+        interlockedInt_t SysInterlockedExchange(interlockedInt_t& value, interlockedInt_t exchange);
+        interlockedInt_t SysInterlockedCompareExchange(interlockedInt_t& value, interlockedInt_t comparand, interlockedInt_t exchange);
 
-        interlockedInt_t InterlockedExchange(interlockedInt_t& value, interlockedInt_t exchange);
-        interlockedInt_t InterlockedCompareExchange(interlockedInt_t& value, interlockedInt_t comparand, interlockedInt_t exchange);
+        void* SysInterlockedExchangePointer(void*& ptr, void* exchange);
+        void* SysInterlockedCompareExchangePointer(void*& ptr, void* comparand, void* exchange);
 
-        void* InterlockedExchangePointer(void*& ptr, void* exchange);
-        void* InterlockedCompareExchangePointer(void*& ptr, void* comparand, void* exchange);
+        void SysYield();
 
-        void Yield();
-
-        void   CPUCount(int32& logicalNum, int32& coreNum, int32& packageNum);
-        core_t ThreadToCore(int32 thread);
+        void   SysCPUCount(int32& logicalNum, int32& coreNum, int32& packageNum);
+        core_t SysThreadToCore(int32 thread);
 
         const int32 MAX_CRITICAL_SECTIONS = 4;
 
@@ -82,11 +81,11 @@ namespace cjobs
         class SysMutex
         {
         public:
-            SysMutex() { MutexCreate(mHandle); }
-            ~SysMutex() { MutexDestroy(mHandle); }
+            SysMutex() { SysMutexCreate(mHandle); }
+            ~SysMutex() { SysMutexDestroy(mHandle); }
 
-            bool Lock(bool blocking = true) { return MutexLock(mHandle, blocking); }
-            void Unlock() { return MutexUnlock(mHandle); }
+            bool Lock(bool blocking = true) { return SysMutexLock(mHandle, blocking); }
+            void Unlock() { return SysMutexUnlock(mHandle); }
 
         protected:
             mutexHandle_t mHandle;
@@ -115,16 +114,16 @@ namespace cjobs
         public:
             static const int32 WAIT_INFINITE = -1;
 
-            SysSignal(bool manualReset = false) { SignalCreate(mHandle, manualReset); }
-            ~SysSignal() { SignalDestroy(mHandle); }
+            SysSignal(bool manualReset = false) { SysSignalCreate(mHandle, manualReset); }
+            ~SysSignal() { SysSignalDestroy(mHandle); }
 
-            void Raise() { SignalRaise(mHandle); }
-            void Clear() { SignalClear(mHandle); }
+            void Raise() { SysSignalRaise(mHandle); }
+            void Clear() { SysSignalClear(mHandle); }
 
             // Wait returns true if the object is in a signalled state and
             // returns false if the wait timed out. Wait also clears the signalled
             // state when the signalled state is reached within the time out period.
-            bool Wait(int32 timeout = WAIT_INFINITE) { return SignalWait(mHandle, timeout); }
+            bool Wait(int32 timeout = WAIT_INFINITE) { return SysSignalWait(mHandle, timeout); }
 
         protected:
             signalHandle_t mHandle;
@@ -142,11 +141,11 @@ namespace cjobs
             {
             }
 
-            int32 Increment() { return InterlockedIncrement(mInt); }
-            int32 Decrement() { return InterlockedDecrement(mInt); }
+            int32 Increment() { return SysInterlockedIncrement(mInt); }
+            int32 Decrement() { return SysInterlockedDecrement(mInt); }
 
-            int32 Add(int32 v) { return InterlockedAdd(mInt, (interlockedInt_t)v); }
-            int32 Sub(int32 v) { return InterlockedSub(mInt, (interlockedInt_t)v); }
+            int32 Add(int32 v) { return SysInterlockedAdd(mInt, (interlockedInt_t)v); }
+            int32 Sub(int32 v) { return SysInterlockedSub(mInt, (interlockedInt_t)v); }
             int32 GetValue() const { return mInt; }
             void  SetValue(int32 v) { mInt = (interlockedInt_t)v; }
 
@@ -160,10 +159,10 @@ namespace cjobs
             SysThread();
             virtual ~SysThread();
 
-            const char*    GetName() const { return name; }
-            threadHandle_t GetThreadHandle() const { return threadHandle; }
-            bool           IsRunning() const { return isRunning; }
-            bool           IsTerminating() const { return isTerminating; }
+            const char*    GetName() const { return mName; }
+            threadHandle_t GetThreadHandle() const { return mThreadHandle; }
+            bool           IsRunning() const { return mIsRunning; }
+            bool           IsTerminating() const { return mIsTerminating; }
 
             bool StartThread(const char* name, core_t core, EPriority priority = PRIORITY_NORMAL, int32 stackSize = DEFAULT_THREAD_STACK_SIZE);
             bool StartWorkerThread(const char* name, core_t core, EPriority priority = PRIORITY_NORMAL, int32 stackSize = DEFAULT_THREAD_STACK_SIZE);
@@ -193,15 +192,15 @@ namespace cjobs
             virtual int32 Run();
 
         private:
-            char           name[32];
-            threadHandle_t threadHandle;
-            bool           isWorker;
-            bool           isRunning;
-            volatile bool  isTerminating;
-            volatile bool  moreWorkToDo;
-            SysSignal      signalWorkerDone;
-            SysSignal      signalMoreWorkToDo;
-            SysMutex       signalMutex;
+            char           mName[32];
+            threadHandle_t mThreadHandle;
+            bool           mIsWorker;
+            bool           mIsRunning;
+            volatile bool  mIsTerminating;
+            volatile bool  mMoreWorkToDo;
+            SysSignal      mSignalWorkerDone;
+            SysSignal      mSignalMoreWorkToDo;
+            SysMutex       mSignalMutex;
 
             static int32 ThreadProc(SysThread* thread);
 

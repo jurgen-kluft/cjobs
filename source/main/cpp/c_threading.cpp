@@ -7,81 +7,81 @@ namespace cjobs
     namespace cthread
     {
         SysThread::SysThread()
-            : threadHandle(0)
-            , isWorker(false)
-            , isRunning(false)
-            , isTerminating(false)
-            , moreWorkToDo(false)
-            , signalWorkerDone(true)
+            : mThreadHandle(0)
+            , mIsWorker(false)
+            , mIsRunning(false)
+            , mIsTerminating(false)
+            , mMoreWorkToDo(false)
+            , mSignalWorkerDone(true)
         {
         }
 
         SysThread::~SysThread()
         {
             StopThread(true);
-            if (threadHandle)
+            if (mThreadHandle)
             {
-                DestroyThread(threadHandle);
+                SysDestroyThread(mThreadHandle);
             }
         }
 
         bool SysThread::StartThread(const char* name_, core_t core, EPriority priority, int32 stackSize)
         {
-            if (isRunning)
+            if (mIsRunning)
             {
                 return false;
             }
 
-            strncpy(name, name_, sizeof(name));
-            isTerminating = false;
+            strncpy(mName, name_, sizeof(mName));
+            mIsTerminating = false;
 
-            if (threadHandle)
+            if (mThreadHandle)
             {
-                DestroyThread(threadHandle);
+                SysDestroyThread(mThreadHandle);
             }
 
-            threadHandle = CreateThread((ThreadFunc_t)ThreadProc, this, priority, name, core, stackSize, false);
+            mThreadHandle = SysCreateThread((ThreadFunc_t)ThreadProc, this, priority, mName, core, stackSize, false);
 
-            isRunning = true;
+            mIsRunning = true;
             return true;
         }
 
 
         bool SysThread::StartWorkerThread(const char* name_, core_t core, EPriority priority, int32 stackSize)
         {
-            if (isRunning)
+            if (mIsRunning)
             {
                 return false;
             }
 
-            isWorker = true;
+            mIsWorker = true;
 
             bool result = StartThread(name_, core, priority, stackSize);
 
-            signalWorkerDone.Wait(SysSignal::WAIT_INFINITE);
+            mSignalWorkerDone.Wait(SysSignal::WAIT_INFINITE);
 
             return result;
         }
 
         void SysThread::StopThread(bool wait)
         {
-            if (!isRunning)
+            if (!mIsRunning)
             {
                 return;
             }
 
-            if (isWorker)
+            if (mIsWorker)
             {
-                signalMutex.Lock();
-                moreWorkToDo = true;
-                signalWorkerDone.Clear();
-                isTerminating = true;
-                signalMoreWorkToDo.Raise();
-                signalMutex.Unlock();
+                mSignalMutex.Lock();
+                mMoreWorkToDo = true;
+                mSignalWorkerDone.Clear();
+                mIsTerminating = true;
+                mSignalMoreWorkToDo.Raise();
+                mSignalMutex.Unlock();
             }
             else
             {
-                isTerminating = true;
+                mIsTerminating = true;
             }
 
             if (wait)
@@ -92,35 +92,35 @@ namespace cjobs
 
         void SysThread::WaitForThread()
         {
-            if (isWorker)
+            if (mIsWorker)
             {
-                signalWorkerDone.Wait(SysSignal::WAIT_INFINITE);
+                mSignalWorkerDone.Wait(SysSignal::WAIT_INFINITE);
             }
-            else if (isRunning)
+            else if (mIsRunning)
             {
-                DestroyThread(threadHandle);
-                threadHandle = 0;
+                SysDestroyThread(mThreadHandle);
+                mThreadHandle = 0;
             }
         }
 
         void SysThread::SignalWork()
         {
-            if (isWorker)
+            if (mIsWorker)
             {
-                signalMutex.Lock();
-                moreWorkToDo = true;
-                signalWorkerDone.Clear();
-                signalMoreWorkToDo.Raise();
-                signalMutex.Unlock();
+                mSignalMutex.Lock();
+                mMoreWorkToDo = true;
+                mSignalWorkerDone.Clear();
+                mSignalMoreWorkToDo.Raise();
+                mSignalMutex.Unlock();
             }
         }
 
         bool SysThread::IsWorkDone()
         {
-            if (isWorker)
+            if (mIsWorker)
             {
                 // a timeout of 0 will return immediately with true if signaled
-                if (signalWorkerDone.Wait(0))
+                if (mSignalWorkerDone.Wait(0))
                 {
                     return true;
                 }
@@ -133,33 +133,33 @@ namespace cjobs
             int32 retVal = 0;
 
             {
-                if (thread->isWorker)
+                if (thread->mIsWorker)
                 {
                     for (;;)
                     {
-                        thread->signalMutex.Lock();
-                        if (thread->moreWorkToDo)
+                        thread->mSignalMutex.Lock();
+                        if (thread->mMoreWorkToDo)
                         {
-                            thread->moreWorkToDo = false;
-                            thread->signalMoreWorkToDo.Clear();
-                            thread->signalMutex.Unlock();
+                            thread->mMoreWorkToDo = false;
+                            thread->mSignalMoreWorkToDo.Clear();
+                            thread->mSignalMutex.Unlock();
                         }
                         else
                         {
-                            thread->signalWorkerDone.Raise();
-                            thread->signalMutex.Unlock();
-                            thread->signalMoreWorkToDo.Wait(SysSignal::WAIT_INFINITE);
+                            thread->mSignalWorkerDone.Raise();
+                            thread->mSignalMutex.Unlock();
+                            thread->mSignalMoreWorkToDo.Wait(SysSignal::WAIT_INFINITE);
                             continue;
                         }
 
-                        if (thread->isTerminating)
+                        if (thread->mIsTerminating)
                         {
                             break;
                         }
 
                         retVal = thread->Run();
                     }
-                    thread->signalWorkerDone.Raise();
+                    thread->mSignalWorkerDone.Raise();
                 }
                 else
                 {
@@ -167,7 +167,7 @@ namespace cjobs
                 }
             }
             
-            thread->isRunning = false;
+            thread->mIsRunning = false;
             return retVal;
         }
 

@@ -1,12 +1,12 @@
-#ifndef __TIMER_H__
-#define __TIMER_H__
+#ifndef __SYSTIMER_H__
+#define __SYSTIMER_H__
 
 namespace cjobs
 {
     typedef unsigned long long uint64;
     typedef uint64             ticks_t;
 
-    class Timer
+    class SysTimer
     {
     public:
         static void    Init();
@@ -20,4 +20,4 @@ namespace cjobs
     };
 
 } // namespace cjobs
-#endif /* !__TIMER_H__ */
+#endif // __SYSTIMER_H__
