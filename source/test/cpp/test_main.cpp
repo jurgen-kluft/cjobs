@@ -7,7 +7,7 @@
 #include "cunittest/private/ut_ReportAssert.h"
 
 UNITTEST_SUITE_LIST(cUnitTest);
-UNITTEST_SUITE_DECLARE(cUnitTest, test_job);
+UNITTEST_SUITE_DECLARE(cUnitTest, TestSys);
 
 namespace ncore
 {

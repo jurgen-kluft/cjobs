@@ -3,7 +3,7 @@
 
 namespace cjobs
 {
-    namespace cthread
+    namespace csys
     {
         enum EConfig
         {
@@ -19,26 +19,27 @@ namespace cjobs
             PRIORITY_HIGHEST
         };
 
-        typedef int32              int32;
+        typedef int                int32;
         typedef unsigned int       uint32;
         typedef long long          int64;
         typedef unsigned long long uint64;
-        typedef uint64             threadHandle_t;
-        typedef uint32             threadId_t;
         typedef int32              core_t;
 
-        typedef int64  interlockedInt_t;
+        typedef int32  interlockedInt_t;
         typedef uint64 signalHandle_t;
         typedef uint64 mutexHandle_t;
+        typedef uint64 threadHandle_t;
+        typedef uint32 threadId_t;
 
         threadId_t     SysGetCurrentThreadID();
         threadHandle_t SysGetCurrentThread();
 
-        typedef uint32 (*ThreadFunc_t)(void*);
+        typedef int32 (*ThreadFunc_t)(void*);
+
         threadHandle_t SysCreateThread(ThreadFunc_t function, void* parms, EPriority priority, const char* name, core_t core, int32 stackSize = DEFAULT_THREAD_STACK_SIZE, bool suspended = false);
         void           SysWaitForThread(threadHandle_t threadHandle);
         void           SysDestroyThread(threadHandle_t threadHandle);
-        void           SysSetCurrentThreadName(const char* name);
+        bool           SysSetThreadName(threadHandle_t threadHandle, const char* name);
 
         void SysSignalCreate(signalHandle_t& handle, bool manualReset);
         void SysSignalDestroy(signalHandle_t& handle);

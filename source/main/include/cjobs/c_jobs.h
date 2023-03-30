@@ -5,6 +5,7 @@ namespace cjobs
 {
     typedef int                int32;
     typedef unsigned int       uint32;
+    typedef long long          int64;
     typedef unsigned long long uint64;
     
     enum EAllocTags
@@ -15,14 +16,15 @@ namespace cjobs
     class Alloc
     {
     public:
-        void* Allocate(uint32 size, int32 alignment = sizeof(void*), int32 tag = 0) { return v_Allocate(size, alignment, tag); }
+        void* Allocate(uint64 size, int32 alignment = sizeof(void*), int32 tag = 0) { return v_Allocate(size, alignment, tag); }
         void  Deallocate(void* ptr) { v_Deallocate(ptr); }
 
         // variable arguments
         template <typename T, typename... Args> T* Construct(int32 tag, Args&&... args)
         {
             void* mem = Allocate(sizeof(T), sizeof(void*), tag);
-            return new (mem) T(std::forward<Args>(args)...);
+            T*    object = new (mem) T(args...);
+            return object;
         }
 
         template <typename T> void Destruct(T* ptr)
@@ -32,7 +34,7 @@ namespace cjobs
         }
 
     protected:
-        virtual void* v_Allocate(uint32 size, int32 alignment, int32 tag = 0) = 0;
+        virtual void* v_Allocate(uint64 size, int32 alignment, int32 tag = 0) = 0;
         virtual void  v_Deallocate(void* ptr)                                 = 0;
     };
 
@@ -40,9 +42,9 @@ namespace cjobs
 
     enum EJobSyncType_t
     {
-        JOB_SYNC_NONE,
-        JOB_SYNC_SIGNAL,
-        JOB_SYNC_SYNCHRONIZE
+        JOBSYNC_NONE,
+        JOBSYNC_SIGNAL,
+        JOBSYNC_SYNCHRONIZE
     };
 
     typedef int32 JobListId_t;
@@ -93,12 +95,14 @@ namespace cjobs
         uint64 mThreadTotalTime[CONFIG_MAX_THREADS];
     };
 
+    class JobListInstance;
+
     class JobList
     {
-        friend class JobManagerLocal;
-        friend class JobListInstance;
-
     public:
+        JobList(Alloc* allocator, JobListId_t id, const char* name, EJobListPriority_t priority, uint32 maxJobs, uint32 maxSyncs, const uint32 color);
+        ~JobList();
+
         void AddJob(JobRun_t function, void* data);
         void InsertSyncPoint(EJobSyncType_t syncType);
 
@@ -113,14 +117,16 @@ namespace cjobs
         const uint32         GetColor() const { return mColor; } // Get the color for profiling.
         ThreadStats_t const* GetStats() const;                   // Get the stats for this job list.
 
+        void* operator new(uint64 num_bytes, void* mem) { return mem; }
+        void  operator delete(void* mem, void*) {}
+        void* operator new(uint64 num_bytes) noexcept { return nullptr; }
+        void  operator delete(void* mem) {}
+
     protected:
-        Alloc*            mAllocator;
+        Alloc*           mAllocator;
         JobListInstance* mJobListInstance;
         const char*      mName;
         const uint32     mColor;
-
-        JobList(Alloc* allocator, JobListId_t id, const char* name, EJobListPriority_t priority, uint32 maxJobs, uint32 maxSyncs, const uint32 color);
-        ~JobList();
     };
 
     class JobsManager
@@ -134,12 +140,12 @@ namespace cjobs
         virtual JobList* AllocJobList(EJobListPriority_t priority, uint32 maxJobs, uint32 maxSyncs, const uint32 color, const char* name) = 0;
         virtual void     FreeJobList(JobList* jobList)                                                                                    = 0;
 
-        virtual int      GetNumJobLists() const     = 0;
-        virtual int      GetNumFreeJobLists() const = 0;
-        virtual JobList* GetJobList(int index)      = 0;
+        virtual int32    GetNumJobLists() const     = 0;
+        virtual int32    GetNumFreeJobLists() const = 0;
+        virtual JobList* GetJobList(int32 index)    = 0;
 
-        virtual int  GetNumProcessingUnits() = 0;
-        virtual void WaitForAllJobLists()    = 0;
+        virtual int32 GetNumProcessingUnits() = 0;
+        virtual void  WaitForAllJobLists()    = 0;
 
         virtual bool        IsRegisteredJob(JobRun_t function) const         = 0;
         virtual void        RegisterJob(JobRun_t function, const char* name) = 0;

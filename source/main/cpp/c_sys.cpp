@@ -1,10 +1,10 @@
-#include "cjobs/private/c_threading.h"
+#include "cjobs/private/c_sys.h"
 
 #include <string.h>
 
 namespace cjobs
 {
-    namespace cthread
+    namespace csys
     {
         SysThread::SysThread()
             : mThreadHandle(0)

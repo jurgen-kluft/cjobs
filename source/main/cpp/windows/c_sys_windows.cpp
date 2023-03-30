@@ -1,20 +1,12 @@
 #include "cjobs/c_jobs.h"
-#include "cjobs/private/c_timer.h"
-#include "cjobs/private/c_threading.h"
+#include "cjobs/private/c_sys.h"
 
 #if defined(_MSC_VER) && !defined(__clang__) && !defined(__GNUC__) && !defined(NOMINMAX)
 #define NOMINMAX
 #endif
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#undef WIN32_LEAN_AND_MEAN
-#else
-#include <windows.h>
-#endif
 
-#include <thread>
 
 namespace cjobs
 {
@@ -33,23 +25,24 @@ namespace cjobs
         // to be implemented by the user (redirect to existing assert code)
     }
 
-    uint64 Timer::mFrequency = 0;
+    typedef uint64 ticks_t; 
+    static double sTimerFrequency = 0;
 
-    void SysTimer::Init()
+    void SysTimerInit()
     {
         LARGE_INTEGER frequency;
         QueryPerformanceFrequency(&frequency);
-        mFrequency = static_cast<double>(frequency.QuadPart);
+        sTimerFrequency = static_cast<double>(frequency.QuadPart);
     }
 
-    ticks_t SysTimer::Current()
+    ticks_t SysTimerCurrent()
     {
         LARGE_INTEGER ticks;
         QueryPerformanceCounter(&ticks);
         return static_cast<ticks_t>(ticks.QuadPart);
     }
 
-    ticks_t SysTimer::Lap(ticks_t time)
+    ticks_t SysTimerLap(ticks_t time)
     {
         LARGE_INTEGER ticks;
         QueryPerformanceCounter(&ticks);
@@ -57,24 +50,27 @@ namespace cjobs
         return current - time;
     }
 
-    double SysTimer::ElapsedMs(ticks_t time)
+    double SysTimerElapsedMs(ticks_t time)
     {
         LARGE_INTEGER ticks;
         QueryPerformanceCounter(&ticks);
-        return (static_cast<double>(ticks.QuadPart - time) * 1000.0) / mFrequency;
+        return (static_cast<double>(ticks.QuadPart - time) * 1000.0) / sTimerFrequency;
     }
 
     uint64 g_Microseconds()
     {
-        double ms = cjobs::SysTimer::ElapsedMs(0);
+        double ms = SysTimerElapsedMs(0);
         return static_cast<uint64>(ms * 1000.0);
     }
 
-    namespace cthread
+    namespace csys
     {
         bool SysSetThreadName(threadHandle_t handle, const char* name)
         {
-            RESULT hr = SetThreadDescription(handle, name);
+            wchar_t wname[64];
+            MultiByteToWideChar(CP_UTF8, MB_PRECOMPOSED, name, -1, wname, _countof(wname)-1);
+
+            HRESULT hr = SetThreadDescription((HANDLE)handle, wname);
             if (FAILED(hr))
             {
                 return false;
@@ -82,16 +78,16 @@ namespace cjobs
             return true;
         }
 
-        threadHandle_t SysCreateThread(ThreadFunc_t function, void* parms, EPriority priority, const char* name, core_t core, int stackSize, bool suspended)
+        threadHandle_t SysCreateThread(ThreadFunc_t function, void* parms, EPriority priority, const char* name, core_t core, int32 stackSize, bool suspended)
         {
             DWORD flags = (suspended ? CREATE_SUSPENDED : 0);
             flags |= STACK_SIZE_PARAM_IS_A_RESERVATION;
 
             DWORD  threadId;
-            HANDLE handle = _beginthreadex(NULL, stackSize, function, parms, flags, &threadId);
+            HANDLE handle = ::CreateThread(NULL, stackSize, (LPTHREAD_START_ROUTINE)function, parms, flags, &threadId);
             if (handle == 0)
             {
-                idLib::common->FatalError("CreateThread error: %i", GetLastError());
+                // Error("CreateThread error: %i", GetLastError());
                 return (threadHandle_t)0;
             }
             SysSetThreadName(threadId, name);
@@ -134,46 +130,50 @@ namespace cjobs
 
         void SysYield() { SwitchToThread(); }
 
-        void SysSignalCreate(signalHandle_t& handle, bool manualReset) { handle = CreateEvent(NULL, manualReset, FALSE, NULL); }
-        void SysSignalDestroy(signalHandle_t& handle) { CloseHandle(handle); }
-        void SysSignalRaise(signalHandle_t& handle) { SetEvent(handle); }
+        void SysSignalCreate(signalHandle_t& handle, bool manualReset) { handle = (signalHandle_t)CreateEvent(NULL, manualReset, FALSE, NULL); }
+        void SysSignalDestroy(signalHandle_t& handle) { CloseHandle((HANDLE)handle); }
+        void SysSignalRaise(signalHandle_t& handle) { SetEvent((HANDLE)handle); }
         void SysSignalClear(signalHandle_t& handle)
         {
             // events are created as auto-reset so this should never be needed
-            ResetEvent(handle);
+            ResetEvent((HANDLE)handle);
         }
 
-        bool SysSignalWait(signalHandle_t& handle, int timeout)
+        bool SysSignalWait(signalHandle_t& handle, int32 timeout)
         {
-            DWORD result = WaitForSingleObject(handle, timeout == SysSignal::WAIT_INFINITE ? INFINITE : timeout);
-            assert(result == WAIT_OBJECT_0 || (timeout != SysSignal::WAIT_INFINITE && result == WAIT_TIMEOUT));
+            DWORD result = WaitForSingleObject((HANDLE)handle, timeout == SysSignal::WAIT_INFINITE ? INFINITE : timeout);
+
+//            assert(result == WAIT_OBJECT_0 || (timeout != SysSignal::WAIT_INFINITE && result == WAIT_TIMEOUT));
+
             return (result == WAIT_OBJECT_0);
         }
 
-        void SysMutexCreate(mutexHandle_t& handle) { InitializeCriticalSection(&handle); }
-        void SysMutexDestroy(mutexHandle_t& handle) { DeleteCriticalSection(&handle); }
+        void SysMutexCreate(mutexHandle_t& handle) { InitializeCriticalSection((LPCRITICAL_SECTION)&handle); }
+        void SysMutexDestroy(mutexHandle_t& handle) { DeleteCriticalSection((LPCRITICAL_SECTION)&handle); }
 
         bool SysMutexLock(mutexHandle_t& handle, bool blocking)
         {
-            if (TryEnterCriticalSection(&handle) == 0)
+            if (TryEnterCriticalSection((LPCRITICAL_SECTION)&handle) == 0)
             {
                 if (!blocking)
                 {
                     return false;
                 }
-                EnterCriticalSection(&handle);
+                EnterCriticalSection((LPCRITICAL_SECTION)&handle);
             }
             return true;
         }
 
-        void SysMutexUnlock(mutexHandle_t& handle) { LeaveCriticalSection(&handle); }
+        void SysMutexUnlock(mutexHandle_t& handle) { LeaveCriticalSection((LPCRITICAL_SECTION)&handle); }       
 
-        interlockedInt_t SysInterlockedIncrement(interlockedInt_t& value) { return InterlockedIncrementAcquire(&value); }
-        interlockedInt_t SysInterlockedDecrement(interlockedInt_t& value) { return InterlockedDecrementRelease(&value); }
-        interlockedInt_t SysInterlockedAdd(interlockedInt_t& value, interlockedInt_t i) { return InterlockedExchangeAdd(&value, i) + i; }
-        interlockedInt_t SysInterlockedSub(interlockedInt_t& value, interlockedInt_t i) { return InterlockedExchangeAdd(&value, -i) - i; }
-        interlockedInt_t SysInterlockedExchange(interlockedInt_t& value, interlockedInt_t exchange) { return InterlockedExchange(&value, exchange); }
-        interlockedInt_t SysInterlockedCompareExchange(interlockedInt_t& value, interlockedInt_t comparand, interlockedInt_t exchange) { return InterlockedCompareExchange(&value, exchange, comparand); }
+        typedef LONG volatile* pvAtomicInt32;
+
+        interlockedInt_t SysInterlockedIncrement(interlockedInt_t& value) { return InterlockedIncrementAcquire((pvAtomicInt32)&value); }
+        interlockedInt_t SysInterlockedDecrement(interlockedInt_t& value) { return InterlockedDecrementRelease((pvAtomicInt32)&value); }
+        interlockedInt_t SysInterlockedAdd(interlockedInt_t& value, interlockedInt_t i) { return InterlockedExchangeAdd((pvAtomicInt32)&value, i) + i; }
+        interlockedInt_t SysInterlockedSub(interlockedInt_t& value, interlockedInt_t i) { return InterlockedExchangeAdd((pvAtomicInt32)&value, -i) - i; }
+        interlockedInt_t SysInterlockedExchange(interlockedInt_t& value, interlockedInt_t exchange) { return InterlockedExchange((pvAtomicInt32)&value, exchange); }
+        interlockedInt_t SysInterlockedCompareExchange(interlockedInt_t& value, interlockedInt_t comparand, interlockedInt_t exchange) { return InterlockedCompareExchange((pvAtomicInt32)&value, exchange, comparand); }
 
         void* SysInterlockedExchangePointer(void*& ptr, void* exchange) { return InterlockedExchangePointer(&ptr, exchange); }
         void* SysInterlockedCompareExchangePointer(void*& ptr, void* comparand, void* exchange) { return InterlockedCompareExchangePointer(&ptr, exchange, comparand); }
