@@ -69,9 +69,9 @@ namespace cjobs
 
     enum EJobManagerConfig
     {
-        CONFIG_MAX_REGISTERED_JOBS = 128,
-        CONFIG_MAX_THREADS         = 32,
-        CONFIG_MAX_JOBTHREADS      = 32,
+        CONFIG_MAX_REGISTERED_JOBS = 256,
+        CONFIG_MAX_THREADS         = 16,
+        CONFIG_MAX_JOBTHREADS      = 16,
         CONFIG_MAX_JOBLISTS        = 32,
     };
 
@@ -119,11 +119,6 @@ namespace cjobs
         const char*          GetName() const { return mName; }   // Get the job list name
         const uint32         GetColor() const { return mColor; } // Get the color for profiling.
         ThreadStats_t const* GetStats() const;                   // Get the stats for this job list.
-
-        void* operator new(uint64 num_bytes, void* mem) { return mem; }
-        void  operator delete(void* mem, void*) {}
-        void* operator new(uint64 num_bytes) noexcept { return nullptr; }
-        void  operator delete(void* mem) {}
 
     protected:
         Alloc*           mAllocator;
