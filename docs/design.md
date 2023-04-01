@@ -1,7 +1,6 @@
 # JobsManager
 
-For years the performance of processors has increased steadily, and games and other programs have reaped the benefits of this increasing power without having
-to do anything special.
+For years the performance of processors has increased steadily, and games and other programs have reaped the benefits of this increasing power without having to do anything special.
 
 The rules have changed. The performance of single processor cores is now increasing very slowly, if at all. However, the computing power available in a typical computer or console continues to grow. The difference is that most of this performance gain now comes from having multiple processor cores in a single machine, often in a single chip.
 
@@ -11,14 +10,14 @@ The increases in available processing power are just as dramatic as in the past,
 
 The two core concepts are:
 
-- Decompose processing task as "jobs" that are performed by "Worker" threads.
+- Decompose processing task as "Job Lists" that are processed by "Worker" threads.
 - Avoid delegating synchronization to the operating system: Do it yourself with atomic operations.
 
 ## Building blocks
 
 The system relies on three items:
 
-- Jobs
+- Job Lists that contain Jobs
 - Workers
 - Synchronization
 

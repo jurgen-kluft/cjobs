@@ -1,4 +1,4 @@
 # cjobs
 
-parallel jobs library
+A library for running jobs on multiple cores/threads.
 
