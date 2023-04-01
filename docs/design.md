@@ -33,13 +33,13 @@ struct job_t
 
 A "Worker" is a thread that will remain idle waiting for a signal. When it is awoken it tries to find jobs. The workers try to avoid synchronization by using atomic operations while trying to fetch a job from a JobList.
 
-"Synchronization" is performed via three primitives: Signals, Mutexes and Atomic operations. The latter are favored since they allow the engine to retain CPU focus. 
+"Synchronization" is performed via three primitives: Signals, Mutexes and Atomic operations. The latter are favored since they allow the application to retain CPU focus. 
 
 ## Architecture
 
-The brain of that SubSystem is the JobsManager. It is responsible for spawning the workers threads and creating queues where Jobs are stored.
+The brain of that system is the JobsManager. It is responsible for spawning the workers threads and creating lists where Jobs are stored.
 
-That is the first way synchronization is avoided: Divide the engine job posting system into multiple sections that are accessed by one thread only and therefore require no synchronization. In the engine, queues are called JobsList.
+That is the first way synchronization is avoided: Combine jobs into a section that is accessed by one thread only and therefore require no synchronization. In this library, a sections is called a `JobsList`.
 
 ### Jobs consumption
 
@@ -47,18 +47,17 @@ A "Worker" runs continuously and tries to "find a job". This process requires no
 
 ### Usage
 
-Since jobs are segregated into sections accessed by only one thread, there is no synchronization required for adding a job. However, submitting a job to the worker system does involve a mutex. Here is a example where the renderer tries to find which lights are generating interactions :
+Since jobs are segregated into lists accessed by only one thread, there is no synchronization required for adding a job. However, submitting a job to the worker system does involve a mutex. Here is a example where the renderer tries to find which lights are generating interactions :
 
 ```cpp
-    //tr.frontEndJobList is a JobsList
-
-    for ( viewLight_t * vLight = tr.viewDef->viewLights; vLight != NULL; vLight = vLight->next )
+    for (chunk_t* chunk = app.ChunksToCompress; chunk != nullptr; chunk = chunk->next )
     {
-        tr.frontEndJobList->AddJob( (jobRun_t)R_AddSingleLight, vLight );
+        // app.compressionJobList is a JobsList
+        app.compressionJobList->AddJob( (jobRun_t)R_CompressChunk, chunk );
     }
     
-    tr.frontEndJobList->Submit();
-    tr.frontEndJobList->Wait();
+    app.compressionJobList->Submit();
+    app.compressionJobList->Wait();
 ```
  
 Three parts:
