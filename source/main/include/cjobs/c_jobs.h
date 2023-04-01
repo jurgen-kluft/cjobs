@@ -51,9 +51,9 @@ namespace cjobs
 
     enum EJobsListParallelism_t
     {
-        JOBSLIST_PARALLELISM_DEFAULT     = -1, // use "jobs_numThreads" number of threads
-        JOBSLIST_PARALLELISM_MAX_CORES   = -2, // use a thread for each logical core (includes hyperthreads)
-        JOBSLIST_PARALLELISM_MAX_THREADS = -3  // use the maximum number of job threads, which can help if there is IO to overlap
+        JOBSLIST_PARALLELISM_NONE    = 0,                        // run on the current (calling) thread
+        JOBSLIST_PARALLELISM_MAX     = -1,                       // use the maximum number of job threads, which can help if there is IO to overlap
+        JOBSLIST_PARALLELISM_DEFAULT = JOBSLIST_PARALLELISM_MAX, // use "jobs_numThreads" number of threads
     };
 
     enum EJobsManagerConfig
@@ -159,7 +159,7 @@ namespace cjobs
         virtual JobsList* GetJobList(int32 index)    = 0;
 
         virtual int32 GetNumProcessingUnits() const = 0;
-        virtual void  WaitForAllJobLists()    = 0;
+        virtual void  WaitForAllJobLists()          = 0;
 
         virtual bool        IsRegisteredJob(JobRun_t function) const         = 0;
         virtual void        RegisterJob(JobRun_t function, const char* name) = 0;

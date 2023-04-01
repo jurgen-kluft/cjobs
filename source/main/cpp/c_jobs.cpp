@@ -851,15 +851,15 @@ namespace cjobs
         Alloc*           mAllocator;
         JobThread*       mThreads[CONFIG_MAX_JOBTHREADS];
         uint32           mMaxThreads;
-        int32            mNumPhysicalCpuCores;
-        int32            mNumLogicalCpuCores;
-        int32            mNumCpuPackages;
         List<JobsList*>  mJobLists;
         JobsRegister     mJobsRegister;
     };
 
     JobsManagerLocal::JobsManagerLocal(Alloc* allocator)
         : mAllocator(allocator)
+        , mMaxThreads(0)
+        , mJobLists()
+        , mJobsRegister()
     {
     }
 
@@ -941,17 +941,11 @@ namespace cjobs
 
     void JobsManagerLocal::Submit(JobsListInstance* mJobsList, int32 parallelism)
     {
-        if (parallelism > CONFIG_MAX_JOBTHREADS)
-            parallelism = CONFIG_MAX_JOBTHREADS;
-
         int32 numThreads = mMaxThreads;
-        switch (parallelism)
-        {
-            case JOBSLIST_PARALLELISM_DEFAULT: numThreads = mMaxThreads; break;
-            case JOBSLIST_PARALLELISM_MAX_CORES: numThreads = mNumLogicalCpuCores; break;
-            case JOBSLIST_PARALLELISM_MAX_THREADS: numThreads = CONFIG_MAX_JOBTHREADS; break;
-            default: numThreads = parallelism; break;
-        }
+        if (parallelism > numThreads)
+            numThreads = mMaxThreads;
+        else if (parallelism < 0)
+            numThreads = mMaxThreads;
 
         if (numThreads > 0)
         {
