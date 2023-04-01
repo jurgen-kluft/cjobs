@@ -190,7 +190,6 @@ namespace cjobs
         {
             JobRun_t function;
             void*    data;
-            int32    executed;
         };
         int32                mJobListIndexDebug;
         List<job_t>          mJobsList;
@@ -270,7 +269,6 @@ namespace cjobs
             job_t& job   = mJobsList.Allocate();
             job.function = function;
             job.data     = data;
-            job.executed = 0;
         }
         else
         {
@@ -669,36 +667,42 @@ namespace cjobs
     class JobThread : public csys::SysWorkerThread
     {
     public:
-        JobThread(JobsThreadDescr descr);
+        JobThread(JobsThreadDescr descr, bool* jobsPrioritize);
         ~JobThread();
 
-        void Start(uint32 threadNum);
+        void Start(uint16 threadNum);
         void AddJobList(JobsListInstance* mJobsList);
 
     protected:
         JobsThreadDescr   mDescr;
+        csys::SysMutex    mAddJobMutex;
         JobsListInstance* mJobListInstances[CONFIG_MAX_JOBLISTS]; // cyclic buffer with job lists
+        bool*             mJobsPrioritize;
         int32             mJobListVersions[CONFIG_MAX_JOBLISTS];  // cyclic buffer with job lists
         uint16            mFirstJobList;                          // index of the last job list the thread grabbed
         uint16            mLastJobList;                           // index where the next job list to work on will be added
-        csys::SysMutex    mAddJobMutex;
-        uint32            mThreadNum;
-        bool*             mJobsPrioritize;
+        uint16            mThreadNum;
 
         virtual int32 Run();
     };
 
-    JobThread::JobThread(JobsThreadDescr descr)
+    JobThread::JobThread(JobsThreadDescr descr, bool* jobsPrioritize)
         : mDescr(descr)
+        , mJobsPrioritize(jobsPrioritize)
         , mFirstJobList(0)
         , mLastJobList(0)
         , mThreadNum(0)
     {
+        for (int32 i = 0; i < CONFIG_MAX_JOBLISTS; ++i)
+        {
+            mJobListInstances[i] = nullptr;
+            mJobListVersions[i]  = 0;
+        }
     }
 
     JobThread::~JobThread() {}
 
-    void JobThread::Start(uint32 _threadNum)
+    void JobThread::Start(uint16 _threadNum)
     {
         mThreadNum = _threadNum;
 
@@ -716,7 +720,7 @@ namespace cjobs
 
     void JobThread::AddJobList(JobsListInstance* mJobsList)
     {
-        // must lock because multiple mThreads may try to add new job lists at the same time
+        // must lock because multiple threads may try to add new job lists at the same time
         mAddJobMutex.Lock();
         {
             // wait until there is space available because in rare cases multiple versions of the same job lists may still be queued
@@ -731,12 +735,12 @@ namespace cjobs
         }
         mAddJobMutex.Unlock();
     }
-
+ 
     int32 JobThread::Run()
     {
         JobsListState_t threadJobListState[CONFIG_MAX_JOBLISTS];
-        int32           numJobLists        = 0;
-        int32           lastStalledJobList = -1;
+        int16           numJobLists        = 0;
+        int16           lastStalledJobList = -1;
 
         while (!IsTerminating())
         {
@@ -756,12 +760,12 @@ namespace cjobs
                 break;
             }
 
-            int32               currentJobList = 0;
+            int16               currentJobList = 0;
             EJobsListPriority_t priority       = JOBSLIST_PRIORITY_NONE;
             if (lastStalledJobList < 0)
             {
                 // find the job list with the highest priority
-                for (int32 i = 0; i < numJobLists; i++)
+                for (int16 i = 0; i < numJobLists; i++)
                 {
                     if (threadJobListState[i].mJobsList->GetPriority() > priority && !threadJobListState[i].mJobsList->WaitForOtherJobsList())
                     {
@@ -775,7 +779,7 @@ namespace cjobs
                 // try to hide the stall with a job from a list that has equal or higher priority
                 currentJobList = lastStalledJobList;
                 priority       = threadJobListState[lastStalledJobList].mJobsList->GetPriority();
-                for (int32 i = 0; i < numJobLists; i++)
+                for (int16 i = 0; i < numJobLists; i++)
                 {
                     if (i != lastStalledJobList && threadJobListState[i].mJobsList->GetPriority() >= priority && !threadJobListState[i].mJobsList->WaitForOtherJobsList())
                     {
@@ -795,7 +799,7 @@ namespace cjobs
             if ((result & JobsListInstance::RUN_DONE) != 0)
             {
                 // done with this job list so remove it from the local list
-                for (int32 i = currentJobList; i < numJobLists - 1; i++)
+                for (int16 i = currentJobList; i < numJobLists - 1; i++)
                 {
                     threadJobListState[i] = threadJobListState[i + 1];
                 }
@@ -850,6 +854,7 @@ namespace cjobs
 
         Alloc*           mAllocator;
         JobThread*       mThreads[CONFIG_MAX_JOBTHREADS];
+        bool mJobsPrioritize;
         uint32           mMaxThreads;
         List<JobsList*>  mJobLists;
         JobsRegister     mJobsRegister;
@@ -882,7 +887,7 @@ namespace cjobs
 
         for (int32 i = 0; i < num; i++)
         {
-            mThreads[i] = Construct<JobThread>(mAllocator, TAG_JOBTHREAD, threads[i]);
+            mThreads[i] = Construct<JobThread>(mAllocator, TAG_JOBTHREAD, threads[i], &mJobsPrioritize);
             mThreads[i]->Start(i);
         }
         mMaxThreads = num;

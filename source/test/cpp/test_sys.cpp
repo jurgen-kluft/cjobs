@@ -47,7 +47,7 @@ UNITTEST_SUITE_BEGIN(TestSys)
 
             manager->Init(threads, _countof(threads));
 
-            cjobs::JobsListDescr myListDescr("List1", cjobs::JOBSLIST_PRIORITY_LOW,  256, 256, 0xff0000ff);
+            cjobs::JobsListDescr myListDescr("List1", cjobs::JOBSLIST_PRIORITY_LOW,  256, 256, cjobs::COLOR_RED);
             cjobs::JobsList* myList = manager->AllocJobList(myListDescr);
 
             myList->AddJob(JobRun, (void*)"test");

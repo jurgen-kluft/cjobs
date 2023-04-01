@@ -64,6 +64,22 @@ namespace cjobs
         CONFIG_MAX_JOBLISTS        = 32,
     };
 
+    enum EJobsColor // RGBA
+    {
+        COLOR_RED  = 0xff0000ff,
+        COLOR_GREEN= 0x00ff00ff,
+        COLOR_BLUE = 0x0000ffff,
+        COLOR_WHITE= 0xffffffff,
+        COLOR_BLACK= 0x000000ff,
+        COLOR_GRAY = 0x808080ff,
+        COLOR_CYAN = 0x00ffffff,
+        COLOR_YELLOW=0xffff00ff,
+        COLOR_PURPLE=0xff00ffff,
+        COLOR_ORANGE=0xffa500ff,
+        COLOR_BROWN= 0xa52a2aff,
+        COLOR_PINK = 0xffc0cbff,
+    };
+
     struct ThreadStats_t
     {
         uint32 GetNumExecutedJobs() const;                      // Get the number of jobs executed in this job list.
@@ -122,8 +138,8 @@ namespace cjobs
         {
         }
         const char* const Name;
-        int32 const       Core;
-        int32 const       StackSize;
+        const int32       Core;
+        const int32       StackSize;
     };
 
     struct JobsListDescr
