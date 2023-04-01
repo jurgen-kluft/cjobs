@@ -162,29 +162,32 @@ namespace cjobs
             interlockedInt_t mInt;
         };
 
-        class SysThread
+        struct SysWorkerThreadDescr
+        {
+            const char* Name;
+            int32       Core;
+            EPriority   Priority;
+            int32       StackSize;
+        };
+
+        class SysWorkerThread
         {
         public:
-            SysThread();
-            virtual ~SysThread();
+            SysWorkerThread();
+            virtual ~SysWorkerThread();
 
-            const char*    GetName() const { return mName; }
+            const char*    GetName() const { return mDescr.Name; }
             threadHandle_t GetThreadHandle() const { return mThreadHandle; }
             bool           IsRunning() const { return mIsRunning; }
             bool           IsTerminating() const { return mIsTerminating; }
 
-            bool StartThread(const char* name, core_t core, EPriority priority = PRIORITY_NORMAL, int32 stackSize = DEFAULT_THREAD_STACK_SIZE);
-            bool StartWorkerThread(const char* name, core_t core, EPriority priority = PRIORITY_NORMAL, int32 stackSize = DEFAULT_THREAD_STACK_SIZE);
+            bool StartThread(SysWorkerThreadDescr descr);
             void StopThread(bool wait = true);
 
             // This can be called from multiple other threads. However, in the case
             // of a worker thread, the work being "done" has little meaning if other
             // threads are continuously signalling more work.
             void WaitForThread();
-
-            //------------------------
-            // Worker Thread
-            //------------------------
 
             // Signals the thread to notify work is available.
             // This can be called from multiple other threads.
@@ -201,9 +204,8 @@ namespace cjobs
             virtual int32 Run();
 
         private:
-            char           mName[32];
+            SysWorkerThreadDescr mDescr;
             threadHandle_t mThreadHandle;
-            bool           mIsWorker;
             bool           mIsRunning;
             volatile bool  mIsTerminating;
             volatile bool  mMoreWorkToDo;
@@ -211,12 +213,12 @@ namespace cjobs
             SysSignal      mSignalMoreWorkToDo;
             SysMutex       mSignalMutex;
 
-            static int32 ThreadProc(SysThread* thread);
+            static int32 ThreadProc(SysWorkerThread* thread);
 
-            void operator=(const SysThread& s) {}
+            void operator=(const SysWorkerThread& s) {}
         };
 
     } // namespace cthread
 } // namespace cjobs
 
-#endif // __CJOBS_THREADING_H__mHandle
+#endif // __CJOBS_THREADING_H__

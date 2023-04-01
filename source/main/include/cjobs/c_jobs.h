@@ -5,15 +5,18 @@
 
 namespace cjobs
 {
+    typedef short              int16;
+    typedef unsigned short     uint16;
     typedef int                int32;
     typedef unsigned int       uint32;
     typedef long long          int64;
     typedef unsigned long long uint64;
-    
+
     enum EAllocTags
     {
-        TAG_JOBLIST = 0x4a4c4f42, // "JOBL"
-        TAG_JOBMANAGER = 0x4a4d4e47 // "JMNG"
+        TAG_JOBTHREAD  = 0x4a4f4254, // "JOBT"
+        TAG_JOBLIST    = 0x4a4c4f42, // "JOBL"
+        TAG_JOBMANAGER = 0x4a4d4e47  // "JMNG"
     };
 
     class Alloc
@@ -22,20 +25,6 @@ namespace cjobs
         void* Allocate(uint64 size, int32 alignment = sizeof(void*), int32 tag = 0) { return v_Allocate(size, alignment, tag); }
         void  Deallocate(void* ptr) { v_Deallocate(ptr); }
 
-        // variable arguments
-        template <typename T, typename... Args> T* Construct(int32 tag, Args&&... args)
-        {
-            void* mem = Allocate(sizeof(T), sizeof(void*), tag);
-            T*    object = new (mem) T(args...);
-            return object;
-        }
-
-        template <typename T> void Destruct(T* ptr)
-        {
-            ptr->~T();
-            Deallocate(ptr);
-        }
-
     protected:
         virtual void* v_Allocate(uint64 size, int32 alignment, int32 tag = 0) = 0;
         virtual void  v_Deallocate(void* ptr)                                 = 0;
@@ -43,31 +32,31 @@ namespace cjobs
 
     typedef void (*JobRun_t)(void*);
 
-    enum EJobSyncType_t
+    enum EJobsSyncType_t
     {
-        JOBSYNC_NONE,
-        JOBSYNC_SIGNAL,
-        JOBSYNC_SYNCHRONIZE
+        JOBSSYNC_NONE,
+        JOBSSYNC_SIGNAL,
+        JOBSSYNC_SYNCHRONIZE
     };
 
-    typedef int32 JobListId_t;
+    typedef int32 JobsListId_t;
 
-    enum EJobListPriority_t
+    enum EJobsListPriority_t
     {
-        JOBLIST_PRIORITY_NONE,
-        JOBLIST_PRIORITY_LOW,
-        JOBLIST_PRIORITY_MEDIUM,
-        JOBLIST_PRIORITY_HIGH
+        JOBSLIST_PRIORITY_NONE,
+        JOBSLIST_PRIORITY_LOW,
+        JOBSLIST_PRIORITY_MEDIUM,
+        JOBSLIST_PRIORITY_HIGH
     };
 
-    enum EJobListParallelism_t
+    enum EJobsListParallelism_t
     {
-        JOBLIST_PARALLELISM_DEFAULT     = -1, // use "jobs_numThreads" number of threads
-        JOBLIST_PARALLELISM_MAX_CORES   = -2, // use a thread for each logical core (includes hyperthreads)
-        JOBLIST_PARALLELISM_MAX_THREADS = -3  // use the maximum number of job threads, which can help if there is IO to overlap
+        JOBSLIST_PARALLELISM_DEFAULT     = -1, // use "jobs_numThreads" number of threads
+        JOBSLIST_PARALLELISM_MAX_CORES   = -2, // use a thread for each logical core (includes hyperthreads)
+        JOBSLIST_PARALLELISM_MAX_THREADS = -3  // use the maximum number of job threads, which can help if there is IO to overlap
     };
 
-    enum EJobManagerConfig
+    enum EJobsManagerConfig
     {
         CONFIG_MAX_REGISTERED_JOBS = 256,
         CONFIG_MAX_THREADS         = 16,
@@ -98,33 +87,60 @@ namespace cjobs
         uint64 mThreadTotalTime[CONFIG_MAX_THREADS];
     };
 
-    class JobListInstance;
+    class JobsListInstance;
 
-    class JobList
+    class JobsList
     {
     public:
-        JobList(Alloc* allocator, JobListId_t id, const char* name, EJobListPriority_t priority, uint32 maxJobs, uint32 maxSyncs, const uint32 color);
-        ~JobList();
+        JobsList(Alloc* allocator, JobsListId_t id, JobsListDescr const& descr);
+        ~JobsList();
 
         void AddJob(JobRun_t function, void* data);
-        void InsertSyncPoint(EJobSyncType_t syncType);
+        void InsertSyncPoint(EJobsSyncType_t syncType);
 
         // Submit the jobs in this list.
-        void Submit(JobList* waitForJobList = nullptr, int32 parallelism = JOBLIST_PARALLELISM_DEFAULT);
+        void Submit(JobsList* waitForJobList = nullptr, int32 parallelism = JOBSLIST_PARALLELISM_DEFAULT);
         void Wait();              // Wait for the jobs in this list to finish. Will spin in place if any jobs are not done.
         bool TryWait();           // Try to wait for the jobs in this list to finish but either way return immediately. Returns true if all jobs are done.
         bool IsSubmitted() const; // returns true if the job list has been submitted.
 
-        JobListId_t          GetId() const;                      // Get the job list ID
-        const char*          GetName() const { return mName; }   // Get the job list name
-        const uint32         GetColor() const { return mColor; } // Get the color for profiling.
-        ThreadStats_t const* GetStats() const;                   // Get the stats for this job list.
+        JobsListId_t         GetId() const;    // Get the job list ID
+        const char*          GetName() const;  // Get the job list name
+        const uint32         GetColor() const; // Get the color for profiling.
+        ThreadStats_t const* GetStats() const; // Get the stats for this job list.
 
     protected:
-        Alloc*           mAllocator;
-        JobListInstance* mJobListInstance;
-        const char*      mName;
-        const uint32     mColor;
+        JobsListInstance* mJobsListInstance;
+    };
+
+    struct JobsThreadDescr
+    {
+        JobsThreadDescr(const char* name, int32 core, int32 stackSize)
+            : Name(name)
+            , Core(core)
+            , StackSize(stackSize)
+        {
+        }
+        const char* const Name;
+        int32 const       Core;
+        int32 const       StackSize;
+    };
+
+    struct JobsListDescr
+    {
+        JobsListDescr(const char* name, EJobsListPriority_t priority, int16 maxJobs, int16 maxSyncs, const uint32 color)
+            : Name(name)
+            , Priority(priority)
+            , MaxJobs(maxJobs)
+            , MaxSyncs(maxSyncs)
+            , Color(color)
+        {
+        }
+        const char* const         Name;
+        const EJobsListPriority_t Priority;
+        const int16               MaxJobs;
+        const int16               MaxSyncs;
+        const uint32              Color;
     };
 
     class JobsManager
@@ -132,17 +148,17 @@ namespace cjobs
     public:
         virtual ~JobsManager() {}
 
-        virtual void Init(csys::core_t threads[], int32 num) = 0;
-        virtual void Shutdown()                                    = 0;
+        virtual void Init(JobsThreadDescr threads[], int32 num) = 0;
+        virtual void Shutdown()                                 = 0;
 
-        virtual JobList* AllocJobList(EJobListPriority_t priority, uint32 maxJobs, uint32 maxSyncs, const uint32 color, const char* name) = 0;
-        virtual void     FreeJobList(JobList* jobList)                                                                                    = 0;
+        virtual JobsList* AllocJobList(JobsListDescr const& descr) = 0;
+        virtual void      FreeJobList(JobsList* jobList)           = 0;
 
-        virtual int32    GetNumJobLists() const     = 0;
-        virtual int32    GetNumFreeJobLists() const = 0;
-        virtual JobList* GetJobList(int32 index)    = 0;
+        virtual int32     GetNumJobLists() const     = 0;
+        virtual int32     GetNumFreeJobLists() const = 0;
+        virtual JobsList* GetJobList(int32 index)    = 0;
 
-        virtual int32 GetNumProcessingUnits() = 0;
+        virtual int32 GetNumProcessingUnits() const = 0;
         virtual void  WaitForAllJobLists()    = 0;
 
         virtual bool        IsRegisteredJob(JobRun_t function) const         = 0;
@@ -151,6 +167,7 @@ namespace cjobs
     };
 
     JobsManager* CreateJobManager(Alloc* allocator);
+    void         DestroyJobManager(JobsManager* manager);
 
 } // namespace cjobs
 

@@ -27,16 +27,35 @@ UNITTEST_SUITE_BEGIN(TestSys)
             virtual void  v_Deallocate(void* ptr) { gTestAllocator->deallocate(ptr);            }
         };
 
+        void JobRun(void* params)
+        {
+
+        }
+
+
         UNITTEST_TEST(TestList)
         {
             Allocator           allocator;
             cjobs::JobsManager* manager = cjobs::CreateJobManager(&allocator);
 
-            cjobs::csys::core_t threads[] = {
-                0, 0
+            cjobs::JobsThreadDescr threads[] = {
+                cjobs::JobsThreadDescr("JobThread1", 0, 256*1024 ),
+                cjobs::JobsThreadDescr("JobThread2", 0, 256*1024 ),
+                cjobs::JobsThreadDescr("JobThread3", 0, 256*1024 ),
+                cjobs::JobsThreadDescr("JobThread4", 0, 256*1024 ),
             };
 
             manager->Init(threads, _countof(threads));
+
+            cjobs::JobsListDescr myListDescr("List1", cjobs::JOBSLIST_PRIORITY_LOW,  256, 256, 0xff0000ff);
+            cjobs::JobsList* myList = manager->AllocJobList(myListDescr);
+
+            myList->AddJob(JobRun, (void*)"test");
+            myList->Submit();
+            myList->Wait();
+
+            manager->FreeJobList(myList);
+            manager->Shutdown();
         }
 
 
