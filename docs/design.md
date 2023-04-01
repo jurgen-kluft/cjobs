@@ -47,7 +47,7 @@ A "Worker" runs continuously and tries to "find a job". This process requires no
 
 ### Usage
 
-Since jobs are segregated into lists accessed by only one thread, there is no synchronization required for adding a job. However, submitting a job to the worker system does involve a mutex. Here is a example where the renderer tries to find which lights are generating interactions :
+Since jobs are segregated into lists accessed by only one thread, there is no synchronization required for adding a job. However, submitting a job to the worker system does involve a mutex. Here is a example where an application has to compress a list of data chunks :
 
 ```cpp
     for (chunk_t* chunk = app.ChunksToCompress; chunk != nullptr; chunk = chunk->next )
@@ -62,17 +62,17 @@ Since jobs are segregated into lists accessed by only one thread, there is no sy
  
 Three parts:
 
-1. *AddJob* : No synchronization necessary, job is added to a vector.
-2. *Submit* : Mutex synchonization, each worker threads add the JobList to their own local ringer buffer list of JobLists.
+1. *AddJob* : No synchronization necessary, job is added to an array.
+2. *Submit* : Mutex synchonization, each worker threads add the `JobsList` to their own local ringer buffer of `JobsList`s.
 3. *Wait*   : Signal synchonization (delegated to OS). Let the Worker threads complete.
 
 ### How a "Worker" works
 
 Workers are infinite loops. Each iteration the loop check if more JobList have been added to the ring buffer and if so copies the reference to the local stack.
 
-Local stack : The thread stack is used to store JobLists addresses as an anti-stalling mechanism. If a thread fails to "lock" a JobList, it falls in RUN_STALLED mode. This stall can be recovered from by navigating the local stack JobLists list in order to find an other jobList to visit. This way, "Yielding" is avoided.
+Local stack : The thread stack is used to store `JobsList`s addresses as an anti-stalling mechanism. If a thread fails to "lock" a `JobsList`, it falls into state `STATE_STALLED`. This stall can be recovered from by navigating the local stack `JobsList`s list in order to find an other jobList to visit. This way, *Yielding* is avoided.
 
 The interesting part is that everything is is done with no Mutexes mechanisms: Only atomic operations are used.
 
-Note: Avoiding Mutexes is pushed far: Sometimes they are not used even though they should have been for "correctness". Example: The copy from heap to stack uses lastJobList and firstJobList with no mutex. This means that the copy can omit a JobList added concurrently on the ring buffer. It is wrong but it is OK: The worker will just stall and wait for a signal when the ring buffer operation is completed.
+Note: Avoiding Mutexes is pushed far: Sometimes they are not used even though they should have been for "correctness". Example: The copy from heap to stack uses lastJobList and firstJobList with no mutex. This means that the copy can omit a `JobsList` added concurrently on the ring buffer. It is wrong but it is OK: The worker will just stall and wait for a signal when the ring buffer operation is completed.
 

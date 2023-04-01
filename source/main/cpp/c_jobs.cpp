@@ -161,15 +161,14 @@ namespace cjobs
 
         bool WaitForOtherJobsList();
 
-        // This is thread safe and called from the job mThreads.
-        enum runResult_t
+        // This is thread safe and called from the job threads.
+        enum EWorkerState
         {
-            RUN_OK       = 0,
-            RUN_PROGRESS = 1 << 0,
-            RUN_DONE     = 1 << 1,
-            RUN_STALLED  = 1 << 2
+            STATE_OK       = 0,
+            STATE_PROGRESS = 1 << 0,
+            STATE_DONE     = 1 << 1,
+            STATE_STALLED  = 1 << 2
         };
-
         int32 RunJobs(uint32 mThreadNum, JobsListState_t& state, bool singleJob);
 
         static const int32 NUM_DONE_GUARDS = 4; // cycle through 4 guards so we can cyclicly chain job lists
@@ -452,7 +451,7 @@ namespace cjobs
         if (state.mVersion != mVersion.GetValue())
         {
             // trying to run an old mVersion of this list that is already mDone
-            return RUN_DONE;
+            return STATE_DONE;
         }
 
         DEBUG_ASSERT(mThreadNum < CONFIG_MAX_THREADS);
@@ -462,7 +461,7 @@ namespace cjobs
             mDeferredThreadStats.mStartTime = g_Microseconds(); // first time any thread is running jobs from this list
         }
 
-        int32 result = RUN_OK;
+        int32 result = STATE_OK;
 
         do
         {
@@ -481,7 +480,7 @@ namespace cjobs
                     if (mSignalJobCount[state.mSignalIndex - 1].GetValue() > 0)
                     {
                         // stalled on a synchronization point
-                        return (result | RUN_STALLED);
+                        return (result | STATE_STALLED);
                     }
                 }
                 else if (mJobsList[state.mLastJobIndex].data == &JOB_LIST_DONE)
@@ -489,7 +488,7 @@ namespace cjobs
                     if (mSignalJobCount[mSignalJobCount.Num() - 1].GetValue() > 0)
                     {
                         // stalled on a synchronization point
-                        return (result | RUN_STALLED);
+                        return (result | STATE_STALLED);
                     }
                 }
             }
@@ -516,7 +515,7 @@ namespace cjobs
                             // return this job to the list
                             mCurrentJob.Decrement();
                             mFetchLock.Decrement();        // release the fetch lock
-                            return (result | RUN_STALLED); // stalled on a synchronization point
+                            return (result | STATE_STALLED); // stalled on a synchronization point
                         }
                     }
                     else if (mJobsList[state.mLastJobIndex].data == &JOB_LIST_DONE)
@@ -526,7 +525,7 @@ namespace cjobs
                             // return this job to the list
                             mCurrentJob.Decrement();
                             mFetchLock.Decrement();        // release the fetch lock
-                            return (result | RUN_STALLED); // stalled on a synchronization point
+                            return (result | STATE_STALLED); // stalled on a synchronization point
                         }
                         // decrement the mDone count
                         mDoneGuards[mCurrentDoneGuard].Decrement();
@@ -537,13 +536,13 @@ namespace cjobs
             else
             {
                 mFetchLock.Decrement();        // release the fetch lock
-                return (result | RUN_STALLED); // another thread is fetching right now so consider stalled
+                return (result | STATE_STALLED); // another thread is fetching right now so consider stalled
             }
 
             // if at the end of the job list we're mDone
             if (state.mNextJobIndex >= mJobsList.Num())
             {
-                return (result | RUN_DONE);
+                return (result | STATE_DONE);
             }
 
             // execute the next job
@@ -551,7 +550,6 @@ namespace cjobs
                 uint64 jobStart = g_Microseconds();
 
                 mJobsList[state.mNextJobIndex].function(mJobsList[state.mNextJobIndex].data);
-                mJobsList[state.mNextJobIndex].executed = 1;
 
                 uint64 jobEnd = g_Microseconds();
                 mDeferredThreadStats.mThreadExecTime[mThreadNum] += jobEnd - jobStart;
@@ -572,7 +570,7 @@ namespace cjobs
 #endif
             }
 
-            result |= RUN_PROGRESS;
+            result |= STATE_PROGRESS;
 
             // decrease the job count for the current signal
             if (mSignalJobCount[state.mSignalIndex].Decrement() == 0)
@@ -581,7 +579,7 @@ namespace cjobs
                 if (state.mSignalIndex == mSignalJobCount.Num() - 1)
                 {
                     mDeferredThreadStats.mEndTime = g_Microseconds();
-                    return (result | RUN_DONE);
+                    return (result | STATE_DONE);
                 }
             }
 
@@ -796,7 +794,7 @@ namespace cjobs
             // try running one or more jobs from the current job list
             const int32 result = threadJobListState[currentJobList].mJobsList->RunJobs(mThreadNum, threadJobListState[currentJobList], singleJob);
 
-            if ((result & JobsListInstance::RUN_DONE) != 0)
+            if ((result & JobsListInstance::STATE_DONE) != 0)
             {
                 // done with this job list so remove it from the local list
                 for (int16 i = currentJobList; i < numJobLists - 1; i++)
@@ -806,12 +804,12 @@ namespace cjobs
                 numJobLists--;
                 lastStalledJobList = -1;
             }
-            else if ((result & JobsListInstance::RUN_STALLED) != 0)
+            else if ((result & JobsListInstance::STATE_STALLED) != 0)
             {
                 // yield when stalled on the same job list again without making any progress
                 if (currentJobList == lastStalledJobList)
                 {
-                    if ((result & JobsListInstance::RUN_PROGRESS) == 0)
+                    if ((result & JobsListInstance::STATE_PROGRESS) == 0)
                     {
                         csys::SysYield();
                     }
