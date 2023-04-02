@@ -58,7 +58,7 @@ namespace cjobs
         {
             if (mData)
             {
-                mAlloc->Deallocate(mData);
+                alloc->Deallocate(mData);
                 mData = nullptr;
             }
             mCapacity = 0;
@@ -66,11 +66,11 @@ namespace cjobs
         }
         else if (n > mCapacity)
         {
-            T* newData = (T*)mAlloc->Allocate(n * sizeof(T), sizeof(void*));
+            T* newData = (T*)alloc->Allocate(n * sizeof(T), sizeof(void*));
             if (mData)
             {
                 memcpy(newData, mData, mCount * sizeof(T));
-                mAlloc->Deallocate(mData);
+                alloc->Deallocate(mData);
             }
             mData     = newData;
             mCapacity = n;
