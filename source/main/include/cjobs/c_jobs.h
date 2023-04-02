@@ -66,18 +66,18 @@ namespace cjobs
 
     enum EJobsColor // RGBA
     {
-        COLOR_RED  = 0xff0000ff,
-        COLOR_GREEN= 0x00ff00ff,
-        COLOR_BLUE = 0x0000ffff,
-        COLOR_WHITE= 0xffffffff,
-        COLOR_BLACK= 0x000000ff,
-        COLOR_GRAY = 0x808080ff,
-        COLOR_CYAN = 0x00ffffff,
-        COLOR_YELLOW=0xffff00ff,
-        COLOR_PURPLE=0xff00ffff,
-        COLOR_ORANGE=0xffa500ff,
-        COLOR_BROWN= 0xa52a2aff,
-        COLOR_PINK = 0xffc0cbff,
+        COLOR_RED    = 0xff0000ff,
+        COLOR_GREEN  = 0x00ff00ff,
+        COLOR_BLUE   = 0x0000ffff,
+        COLOR_WHITE  = 0xffffffff,
+        COLOR_BLACK  = 0x000000ff,
+        COLOR_GRAY   = 0x808080ff,
+        COLOR_CYAN   = 0x00ffffff,
+        COLOR_YELLOW = 0xffff00ff,
+        COLOR_PURPLE = 0xff00ffff,
+        COLOR_ORANGE = 0xffa500ff,
+        COLOR_BROWN  = 0xa52a2aff,
+        COLOR_PINK   = 0xffc0cbff,
     };
 
     struct ThreadStats_t
@@ -122,7 +122,7 @@ namespace cjobs
 
         JobsListId_t         GetId() const;    // Get the job list ID
         const char*          GetName() const;  // Get the job list name
-        const uint32         GetColor() const; // Get the color for profiling.
+        uint32               GetColor() const; // Get the color for profiling.
         ThreadStats_t const* GetStats() const; // Get the stats for this job list.
 
     protected:
