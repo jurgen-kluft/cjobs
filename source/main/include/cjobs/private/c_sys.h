@@ -5,11 +5,6 @@ namespace cjobs
 {
     namespace csys
     {
-        enum EConfig
-        {
-            DEFAULT_THREAD_STACK_SIZE = (256 * 1024)
-        };
-
         enum EPriority
         {
             PRIORITY_LOWEST,
@@ -36,7 +31,7 @@ namespace cjobs
 
         typedef int32 (*ThreadFunc_t)(void*);
 
-        threadHandle_t SysCreateThread(ThreadFunc_t function, void* parms, EPriority priority, const char* name, core_t core, int32 stackSize = DEFAULT_THREAD_STACK_SIZE, bool suspended = false);
+        threadHandle_t SysCreateThread(ThreadFunc_t function, void* parms, EPriority priority, const char* name, core_t core, int32 stackSize = 0, bool suspended = false);
         void           SysWaitForThread(threadHandle_t threadHandle);
         void           SysDestroyThread(threadHandle_t threadHandle);
         bool           SysSetThreadName(threadHandle_t threadHandle, const char* name);
@@ -93,7 +88,10 @@ namespace cjobs
             mutexHandle_t mHandle;
 
         private:
-            SysMutex(const SysMutex& s) : mHandle(0) {}
+            SysMutex(const SysMutex& s)
+                : mHandle(0)
+            {
+            }
             void operator=(const SysMutex& s) {}
         };
 
@@ -164,6 +162,13 @@ namespace cjobs
 
         struct SysWorkerThreadDescr
         {
+            SysWorkerThreadDescr()
+                : Name(nullptr)
+                , Core(0)
+                , Priority(PRIORITY_NORMAL)
+                , StackSize(0)
+            {
+            }
             const char* Name;
             int32       Core;
             EPriority   Priority;
@@ -205,20 +210,20 @@ namespace cjobs
 
         private:
             SysWorkerThreadDescr mDescr;
-            threadHandle_t mThreadHandle;
-            bool           mIsRunning;
-            volatile bool  mIsTerminating;
-            volatile bool  mMoreWorkToDo;
-            SysSignal      mSignalWorkerDone;
-            SysSignal      mSignalMoreWorkToDo;
-            SysMutex       mSignalMutex;
+            threadHandle_t       mThreadHandle;
+            bool                 mIsRunning;
+            volatile bool        mIsTerminating;
+            volatile bool        mMoreWorkToDo;
+            SysSignal            mSignalWorkerDone;
+            SysSignal            mSignalMoreWorkToDo;
+            SysMutex             mSignalMutex;
 
             static int32 ThreadProc(SysWorkerThread* thread);
 
             void operator=(const SysWorkerThread& s) {}
         };
 
-    } // namespace cthread
+    } // namespace csys
 } // namespace cjobs
 
 #endif // __CJOBS_THREADING_H__

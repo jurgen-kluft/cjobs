@@ -6,6 +6,11 @@ namespace cjobs
 {
     namespace csys
     {
+        enum EConfig
+        {
+            DEFAULT_THREAD_STACK_SIZE = (256 * 1024)
+        };
+
         SysWorkerThread::SysWorkerThread()
             : mThreadHandle(0)
             , mIsRunning(false)
@@ -13,7 +18,7 @@ namespace cjobs
             , mMoreWorkToDo(false)
             , mSignalWorkerDone(true)
         {
-            mName[0] = '\0';
+
         }
 
         SysWorkerThread::~SysWorkerThread()
@@ -25,14 +30,13 @@ namespace cjobs
             }
         }
 
-        bool SysWorkerThread::StartThread(const char* name_, core_t core, EPriority priority, int32 stackSize)
+        bool SysWorkerThread::StartThread(SysWorkerThreadDescr descr)
         {
             if (mIsRunning)
             {
                 return false;
             }
 
-            strncpy(mName, name_, sizeof(mName));
             mIsTerminating = false;
 
             if (mThreadHandle)
@@ -40,7 +44,13 @@ namespace cjobs
                 SysDestroyThread(mThreadHandle);
             }
 
-            mThreadHandle = SysCreateThread((ThreadFunc_t)ThreadProc, this, priority, mName, core, stackSize, false);
+            mDescr = descr;
+            
+            int32 stackSize = descr.StackSize;
+            if (stackSize == 0)
+                stackSize = DEFAULT_THREAD_STACK_SIZE;
+
+            mThreadHandle = SysCreateThread((ThreadFunc_t)ThreadProc, this, descr.Priority, descr.Name, descr.Core, stackSize, false);
             mIsRunning = true;
 
             mSignalWorkerDone.Wait(SysSignal::WAIT_INFINITE);
