@@ -636,11 +636,20 @@ namespace cjobs
         return false;
     }
 
-    JobsList::JobsList(Alloc* allocator, JobsListId_t id, JobsListDescr const& descr)
+    JobsList::JobsList()
         : mJobsListInstance(nullptr)
     {
-        DEBUG_ASSERT(descr.Priority > JOBSLIST_PRIORITY_NONE);
-        this->mJobsListInstance = Construct<JobsListInstance>(allocator, TAG_JOBLIST, allocator, id, descr);
+    }
+
+    JobsList::JobsList(const JobsList& other)
+        : mJobsListInstance(other.mJobsListInstance)
+    {
+    }
+
+    JobsList::JobsList(JobsListInstance* instance)
+        : mJobsListInstance(instance)
+    {
+        DEBUG_ASSERT(instance->mDescr.Priority > JOBSLIST_PRIORITY_NONE);
     }
 
     JobsList::~JobsList() { Destruct(mJobsListInstance->mAllocator, mJobsListInstance); }
@@ -671,10 +680,10 @@ namespace cjobs
         return mDone;
     }
 
-    void JobsList::Submit(JobsList* waitForJobList, int32 parallelism)
+    void JobsList::Submit(JobsList waitForJobList, int32 parallelism)
     {
-        DEBUG_ASSERT(waitForJobList != this);
-        mJobsListInstance->Submit((waitForJobList != nullptr) ? waitForJobList->mJobsListInstance : nullptr, parallelism);
+        DEBUG_ASSERT(waitForJobList.mJobsListInstance != mJobsListInstance);
+        mJobsListInstance->Submit((waitForJobList.mJobsListInstance != nullptr) ? waitForJobList.mJobsListInstance : nullptr, parallelism);
     }
 
     bool                 JobsList::IsSubmitted() const { return mJobsListInstance->IsSubmitted(); }
@@ -856,12 +865,12 @@ namespace cjobs
         virtual void Init(JobsThreadDescr threads[], int32 num);
         virtual void Shutdown();
 
-        virtual JobsList* AllocJobList(JobsListDescr const& descr);
-        virtual void      FreeJobList(JobsList* jobsList);
+        virtual JobsList AllocJobList(JobsListDescr const& descr);
+        virtual void     FreeJobList(JobsList jobsList);
 
-        virtual int32     GetNumJobLists() const;
-        virtual int32     GetNumFreeJobLists() const;
-        virtual JobsList* GetJobList(int32 index);
+        virtual int32    GetNumJobLists() const;
+        virtual int32    GetNumFreeJobLists() const;
+        virtual JobsList GetJobList(int32 index);
 
         virtual int32 GetNumProcessingUnits() const;
 
@@ -873,12 +882,12 @@ namespace cjobs
 
         void Submit(JobsListInstance* jobsList, int32 parallelism);
 
-        Alloc*           mAllocator;
-        JobThread*       mThreads[CONFIG_MAX_JOBTHREADS];
-        bool             mJobsPrioritize;
-        uint32           mMaxThreads;
-        Array<JobsList*> mJobLists;
-        JobsRegister     mJobsRegister;
+        Alloc*                   mAllocator;
+        JobThread*               mThreads[CONFIG_MAX_JOBTHREADS];
+        bool                     mJobsPrioritize;
+        uint32                   mMaxThreads;
+        Array<JobsListInstance*> mJobLists;
+        JobsRegister             mJobsRegister;
     };
 
     JobsManagerLocal::JobsManagerLocal(Alloc* allocator)
@@ -923,17 +932,17 @@ namespace cjobs
         mJobLists.SetCapacity(mAllocator, 0);
     }
 
-    JobsList* JobsManagerLocal::AllocJobList(JobsListDescr const& descr)
+    JobsList JobsManagerLocal::AllocJobList(JobsListDescr const& descr)
     {
-        JobsListId_t id      = mJobLists.Count();
-        JobsList*&   jobList = mJobLists.Append();
-        jobList              = Construct<JobsList>(mAllocator, TAG_JOBLIST, mAllocator, id, descr);
-        return jobList;
+        JobsListId_t       id      = mJobLists.Count();
+        JobsListInstance*& jobList = mJobLists.Append();
+        jobList                    = Construct<JobsListInstance>(mAllocator, TAG_JOBLIST, mAllocator, id, descr);
+        return JobsList(jobList);
     }
 
-    void JobsManagerLocal::FreeJobList(JobsList* jobList)
+    void JobsManagerLocal::FreeJobList(JobsList jobList)
     {
-        if (jobList == nullptr)
+        if (jobList.mJobsListInstance == nullptr)
         {
             return;
         }
@@ -944,17 +953,17 @@ namespace cjobs
             mThreads[i]->WaitForThread();
         }
 
-        int32 index = mJobLists.Find(jobList);
-        DEBUG_ASSERT(index >= 0 && mJobLists[index] == jobList);
+        int32 index = mJobLists.Find(jobList.mJobsListInstance);
+        DEBUG_ASSERT(index >= 0 && mJobLists[index] == jobList.mJobsListInstance);
         mJobLists[index]->Wait();
-        Destruct<JobsList>(mAllocator, jobList);
+        Destruct<JobsListInstance>(mAllocator, jobList.mJobsListInstance);
         mJobLists.Remove(index);
     }
 
-    int32     JobsManagerLocal::GetNumJobLists() const { return mJobLists.Count(); }
-    int32     JobsManagerLocal::GetNumFreeJobLists() const { return CONFIG_MAX_JOBLISTS - mJobLists.Count(); }
-    JobsList* JobsManagerLocal::GetJobList(int32 index) { return mJobLists[index]; }
-    int32     JobsManagerLocal::GetNumProcessingUnits() const { return mMaxThreads; }
+    int32    JobsManagerLocal::GetNumJobLists() const { return mJobLists.Count(); }
+    int32    JobsManagerLocal::GetNumFreeJobLists() const { return CONFIG_MAX_JOBLISTS - mJobLists.Count(); }
+    JobsList JobsManagerLocal::GetJobList(int32 index) { return JobsList(mJobLists[index]); }
+    int32    JobsManagerLocal::GetNumProcessingUnits() const { return mMaxThreads; }
 
     void JobsManagerLocal::WaitForAllJobLists()
     {

@@ -108,14 +108,15 @@ namespace cjobs
     class JobsList
     {
     public:
-        JobsList(Alloc* allocator, JobsListId_t id, JobsListDescr const& descr);
+        JobsList();
+        JobsList(const JobsList& other);
         ~JobsList();
 
         void AddJob(JobRun_t function, void* data);
         void InsertSyncPoint(EJobsSyncType_t syncType);
 
         // Submit the jobs in this list.
-        void Submit(JobsList* waitForJobList = nullptr, int32 parallelism = JOBSLIST_PARALLELISM_DEFAULT);
+        void Submit(JobsList waitForJobList = nullptr, int32 parallelism = JOBSLIST_PARALLELISM_DEFAULT);
         void Wait();              // Wait for the jobs in this list to finish. Will spin in place if any jobs are not done.
         bool TryWait();           // Try to wait for the jobs in this list to finish but either way return immediately. Returns true if all jobs are done.
         bool IsSubmitted() const; // returns true if the job list has been submitted.
@@ -126,6 +127,8 @@ namespace cjobs
         ThreadStats_t const* GetStats() const; // Get the stats for this job list.
 
     protected:
+        friend class JobsManagerLocal;
+        JobsList(JobsListInstance* instance);
         JobsListInstance* mJobsListInstance;
     };
 
@@ -167,12 +170,12 @@ namespace cjobs
         virtual void Init(JobsThreadDescr threads[], int32 num) = 0;
         virtual void Shutdown()                                 = 0;
 
-        virtual JobsList* AllocJobList(JobsListDescr const& descr) = 0;
-        virtual void      FreeJobList(JobsList* jobList)           = 0;
+        virtual JobsList AllocJobList(JobsListDescr const& descr) = 0;
+        virtual void     FreeJobList(JobsList jobList)            = 0;
 
         virtual int32     GetNumJobLists() const     = 0;
         virtual int32     GetNumFreeJobLists() const = 0;
-        virtual JobsList* GetJobList(int32 index)    = 0;
+        virtual JobsList  GetJobList(int32 index)    = 0;
 
         virtual int32 GetNumProcessingUnits() const = 0;
         virtual void  WaitForAllJobLists()          = 0;
