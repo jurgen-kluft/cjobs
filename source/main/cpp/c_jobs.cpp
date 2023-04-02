@@ -161,6 +161,19 @@ namespace cjobs
         const char* mRegisteredJobNames[CONFIG_MAX_REGISTERED_JOBS];
     };
 
+    class JobsListStatsInstance
+    {
+    public:
+        uint32 mNumExecutedJobs;
+        uint32 mNumExecutedSyncs;
+        uint64 mSubmitTime;
+        uint64 mStartTime;
+        uint64 mEndTime;
+        uint64 mWaitTime;
+        uint64 mThreadExecTime[CONFIG_MAX_THREADS];
+        uint64 mThreadTotalTime[CONFIG_MAX_THREADS];
+    };
+
     class JobsListInstance
     {
     public:
@@ -175,12 +188,12 @@ namespace cjobs
         bool        TryWait();
         bool        IsSubmitted() const;
 
-        JobsListId_t         GetId() const { return mListId; }
-        JobsListDescr const& GetDescr() const { return mDescr; }
-        EJobsListPriority_t  GetPriority() const { return mDescr.Priority; }
-        int32                GetVersion() { return mVersion.GetValue(); }
-        ThreadStats_t*       GetThreadStats() { return &mThreadStats; }
-        ThreadStats_t const* GetThreadStats() const { return &mThreadStats; }
+        JobsListId_t                 GetId() const { return mListId; }
+        JobsListDescr const&         GetDescr() const { return mDescr; }
+        EJobsListPriority_t          GetPriority() const { return mDescr.Priority; }
+        int32                        GetVersion() { return mVersion.GetValue(); }
+        JobsListStatsInstance*       GetStats() { return &mStats; }
+        JobsListStatsInstance const* GetStats() const { return &mStats; }
 
         bool WaitForOtherJobsList();
 
@@ -219,11 +232,9 @@ namespace cjobs
         InterlockedInt        mCurrentJob;
         InterlockedInt        mFetchLock;
         InterlockedInt        mNumThreadsExecuting;
-
-        JobsRegister* mJobsRegister;
-
-        ThreadStats_t mDeferredThreadStats;
-        ThreadStats_t mThreadStats;
+        JobsRegister*         mJobsRegister;
+        JobsListStatsInstance mDeferredStats;
+        JobsListStatsInstance mStats;
 
         int32 RunJobsInternal(uint32 mThreadNum, JobsListState_t& state, bool singleJob);
 
@@ -259,8 +270,8 @@ namespace cjobs
         mSignalJobCount.SetCapacity(mAllocator, mDescr.MaxSyncs + 1); // need one extra for submit
         mSignalJobCount.SetCount(0);
 
-        memset(&mDeferredThreadStats, 0, sizeof(ThreadStats_t));
-        memset(&mThreadStats, 0, sizeof(ThreadStats_t));
+        memset(&mDeferredStats, 0, sizeof(JobsListStats));
+        memset(&mStats, 0, sizeof(JobsListStats));
     }
 
     JobsListInstance::~JobsListInstance()
@@ -366,13 +377,13 @@ namespace cjobs
         mDone = false;
         mCurrentJob.SetValue(0);
 
-        memset(&mDeferredThreadStats, 0, sizeof(mDeferredThreadStats));
-        mDeferredThreadStats.mNumExecutedJobs  = mJobsList.Count() - mNumSyncs * 2;
-        mDeferredThreadStats.mNumExecutedSyncs = mNumSyncs;
-        mDeferredThreadStats.mSubmitTime       = g_Microseconds();
-        mDeferredThreadStats.mStartTime        = 0;
-        mDeferredThreadStats.mEndTime          = 0;
-        mDeferredThreadStats.mWaitTime         = 0;
+        memset(&mDeferredStats, 0, sizeof(mDeferredStats));
+        mDeferredStats.mNumExecutedJobs  = mJobsList.Count() - mNumSyncs * 2;
+        mDeferredStats.mNumExecutedSyncs = mNumSyncs;
+        mDeferredStats.mSubmitTime       = g_Microseconds();
+        mDeferredStats.mStartTime        = 0;
+        mDeferredStats.mEndTime          = 0;
+        mDeferredStats.mWaitTime         = 0;
 
         if (mJobsList.Count() == 0)
         {
@@ -442,10 +453,10 @@ namespace cjobs
             mNumSyncs      = 0;
             mLastSignalJob = 0;
 
-            uint64 waitEnd                 = g_Microseconds();
-            mDeferredThreadStats.mWaitTime = waited ? (waitEnd - waitStart) : 0;
+            uint64 waitEnd           = g_Microseconds();
+            mDeferredStats.mWaitTime = waited ? (waitEnd - waitStart) : 0;
         }
-        memcpy(&mThreadStats, &mDeferredThreadStats, sizeof(mThreadStats));
+        memcpy(&mStats, &mDeferredStats, sizeof(mStats));
         mDone = true;
     }
 
@@ -477,9 +488,9 @@ namespace cjobs
 
         DEBUG_ASSERT(mThreadNum < CONFIG_MAX_THREADS);
 
-        if (mDeferredThreadStats.mStartTime == 0)
+        if (mDeferredStats.mStartTime == 0)
         {
-            mDeferredThreadStats.mStartTime = g_Microseconds(); // first time any thread is running jobs from this list
+            mDeferredStats.mStartTime = g_Microseconds(); // first time any thread is running jobs from this list
         }
 
         int32 result = STATE_OK;
@@ -573,7 +584,7 @@ namespace cjobs
                 mJobsList[state.mNextJobIndex].function(mJobsList[state.mNextJobIndex].data);
 
                 uint64 jobEnd = g_Microseconds();
-                mDeferredThreadStats.mThreadExecTime[mThreadNum] += jobEnd - jobStart;
+                mDeferredStats.mThreadExecTime[mThreadNum] += jobEnd - jobStart;
 
 #ifdef PLATFORM_DEBUG
                 if (jobs_longJobMicroSec.GetInteger() > 0)
@@ -599,7 +610,7 @@ namespace cjobs
                 // if this was the very last job of the job list
                 if (state.mSignalIndex == mSignalJobCount.Count() - 1)
                 {
-                    mDeferredThreadStats.mEndTime = g_Microseconds();
+                    mDeferredStats.mEndTime = g_Microseconds();
                     return (result | STATE_DONE);
                 }
             }
@@ -620,7 +631,7 @@ namespace cjobs
         }
         mNumThreadsExecuting.Decrement();
 
-        mDeferredThreadStats.mThreadTotalTime[mThreadNum] += g_Microseconds() - start;
+        mDeferredStats.mThreadTotalTime[mThreadNum] += g_Microseconds() - start;
         return result;
     }
 
@@ -686,11 +697,18 @@ namespace cjobs
         mJobsListInstance->Submit((waitForJobList.mJobsListInstance != nullptr) ? waitForJobList.mJobsListInstance : nullptr, parallelism);
     }
 
-    bool                 JobsList::IsSubmitted() const { return mJobsListInstance->IsSubmitted(); }
-    JobsListId_t         JobsList::GetId() const { return mJobsListInstance->GetId(); }
-    const char*          JobsList::GetName() const { return mJobsListInstance->GetDescr().Name; }
-    uint32               JobsList::GetColor() const { return mJobsListInstance->GetDescr().Color; }
-    ThreadStats_t const* JobsList::GetStats() const { return mJobsListInstance->GetThreadStats(); }
+    bool          JobsList::IsSubmitted() const { return mJobsListInstance->IsSubmitted(); }
+    JobsListId_t  JobsList::GetId() const { return mJobsListInstance->GetId(); }
+    const char*   JobsList::GetName() const { return mJobsListInstance->GetDescr().Name; }
+    uint32        JobsList::GetColor() const { return mJobsListInstance->GetDescr().Color; }
+    JobsListStats JobsList::GetStats() const { return JobsListStats(mJobsListInstance->GetStats()); }
+
+    bool JobsList::operator==(const JobsList& other) const { return mJobsListInstance == other.mJobsListInstance; }
+    bool JobsList::operator!=(const JobsList& other) const { return mJobsListInstance != other.mJobsListInstance; }
+    bool JobsList::operator<(const JobsList& other) const { return mJobsListInstance->GetDescr().Priority < other.mJobsListInstance->GetDescr().Priority; }
+    bool JobsList::operator>(const JobsList& other) const { return mJobsListInstance->GetDescr().Priority > other.mJobsListInstance->GetDescr().Priority; }
+    bool JobsList::operator<=(const JobsList& other) const { return mJobsListInstance->GetDescr().Priority <= other.mJobsListInstance->GetDescr().Priority; }
+    bool JobsList::operator>=(const JobsList& other) const { return mJobsListInstance->GetDescr().Priority >= other.mJobsListInstance->GetDescr().Priority; }
 
     const int32 JOB_THREAD_STACK_SIZE = 256 * 1024; // same size as the SPU local store
 
@@ -1052,45 +1070,50 @@ namespace cjobs
         return "unknown";
     }
 
-    uint32 ThreadStats_t::GetNumExecutedJobs() const { return mNumExecutedJobs; }
-    uint32 ThreadStats_t::GetNumSyncs() const { return mNumExecutedSyncs; }
-    uint64 ThreadStats_t::GetSubmitTimeMicroSec() const { return mSubmitTime; }
-    uint64 ThreadStats_t::GetStartTimeMicroSec() const { return mStartTime; }
-    uint64 ThreadStats_t::GetFinishTimeMicroSec() const { return mEndTime; }
-    uint64 ThreadStats_t::GetWaitTimeMicroSec() const { return mWaitTime; }
-    uint64 ThreadStats_t::GetTotalProcessingTimeMicroSec() const
+    uint32 JobsListStats::GetNumExecutedJobs() const { return mStats->mNumExecutedJobs; }
+    uint32 JobsListStats::GetNumSyncs() const { return mStats->mNumExecutedSyncs; }
+    uint64 JobsListStats::GetSubmitTimeMicroSec() const { return mStats->mSubmitTime; }
+    uint64 JobsListStats::GetStartTimeMicroSec() const { return mStats->mStartTime; }
+    uint64 JobsListStats::GetFinishTimeMicroSec() const { return mStats->mEndTime; }
+    uint64 JobsListStats::GetWaitTimeMicroSec() const { return mStats->mWaitTime; }
+
+    uint64 JobsListStats::GetTotalProcessingTimeMicroSec() const
     {
-        uint64 total = 0;
-        for (int32 unit = 0; unit < CONFIG_MAX_THREADS; unit++)
+        uint64 const* src   = &mStats->mThreadExecTime[0];
+        uint64 const* end   = src + CONFIG_MAX_THREADS;
+        uint64        total = *src++;
+        do
         {
-            total += mThreadExecTime[unit];
-        }
+            total += *src++;
+        } while (src < end);
         return total;
     }
-    uint64 ThreadStats_t::GetTotalWastedTimeMicroSec() const
+
+    uint64 JobsListStats::GetTotalWastedTimeMicroSec() const
     {
-        uint64 total = 0;
-        for (int32 unit = 0; unit < CONFIG_MAX_THREADS; unit++)
+        uint64 const* ttime = &mStats->mThreadTotalTime[0];
+        uint64 const* end   = ttime + CONFIG_MAX_THREADS;
+        uint64 const* etime = &mStats->mThreadExecTime[0];
+        uint64        total = *ttime++ - *etime++;
+        do
         {
-            total += mThreadTotalTime[unit] - mThreadExecTime[unit];
-        }
+            total += *ttime++ - *etime++;
+        } while (ttime < end);
         return total;
     }
-    uint64 ThreadStats_t::GetUnitProcessingTimeMicroSec(int32 unit) const
+
+    uint64 JobsListStats::GetUnitProcessingTimeMicroSec(int32 unit) const
     {
         if (unit < 0 || unit >= CONFIG_MAX_THREADS)
-        {
             return 0;
-        }
-        return mThreadExecTime[unit];
+        return mStats->mThreadExecTime[unit];
     }
-    uint64 ThreadStats_t::GetUnitWastedTimeMicroSec(int32 unit) const
+
+    uint64 JobsListStats::GetUnitWastedTimeMicroSec(int32 unit) const
     {
         if (unit < 0 || unit >= CONFIG_MAX_THREADS)
-        {
             return 0;
-        }
-        return mThreadTotalTime[unit] - mThreadExecTime[unit];
+        return mStats->mThreadTotalTime[unit] - mStats->mThreadExecTime[unit];
     }
 
 } // namespace cjobs

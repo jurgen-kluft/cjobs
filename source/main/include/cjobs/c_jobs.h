@@ -80,8 +80,10 @@ namespace cjobs
         COLOR_PINK   = 0xffc0cbff,
     };
 
-    struct ThreadStats_t
+    class JobsListStatsInstance;
+    class JobsListStats
     {
+    public:
         uint32 GetNumExecutedJobs() const;                      // Get the number of jobs executed in this job list.
         uint32 GetNumSyncs() const;                             // Get the number of sync points.
         uint64 GetSubmitTimeMicroSec() const;                   // Time at which the job list was submitted.
@@ -93,14 +95,13 @@ namespace cjobs
         uint64 GetUnitProcessingTimeMicroSec(int32 unit) const; // Time the given unit spent processing this job list.
         uint64 GetUnitWastedTimeMicroSec(int32 unit) const;     // Time the given unit wasted while processing this job list.
 
-        uint32 mNumExecutedJobs;
-        uint32 mNumExecutedSyncs;
-        uint64 mSubmitTime;
-        uint64 mStartTime;
-        uint64 mEndTime;
-        uint64 mWaitTime;
-        uint64 mThreadExecTime[CONFIG_MAX_THREADS];
-        uint64 mThreadTotalTime[CONFIG_MAX_THREADS];
+    protected:
+        friend class JobsList;
+        JobsListStats(JobsListStatsInstance* stats)
+            : mStats(stats)
+        {
+        }
+        JobsListStatsInstance* const mStats;
     };
 
     class JobsListInstance;
@@ -121,10 +122,19 @@ namespace cjobs
         bool TryWait();           // Try to wait for the jobs in this list to finish but either way return immediately. Returns true if all jobs are done.
         bool IsSubmitted() const; // returns true if the job list has been submitted.
 
-        JobsListId_t         GetId() const;    // Get the job list ID
-        const char*          GetName() const;  // Get the job list name
-        uint32               GetColor() const; // Get the color for profiling.
-        ThreadStats_t const* GetStats() const; // Get the stats for this job list.
+        JobsListId_t  GetId() const;    // Get the job list ID
+        const char*   GetName() const;  // Get the job list name
+        uint32        GetColor() const; // Get the color for profiling.
+        JobsListStats GetStats() const; // Get the stats for this job list.
+
+        bool operator==(const JobsList& other) const;
+        bool operator!=(const JobsList& other) const;
+
+        // Comparison operators for sorting job lists by priority.
+        bool operator<(const JobsList& other) const;
+        bool operator>(const JobsList& other) const;
+        bool operator<=(const JobsList& other) const;
+        bool operator>=(const JobsList& other) const;
 
     protected:
         friend class JobsManagerLocal;
@@ -173,9 +183,9 @@ namespace cjobs
         virtual JobsList AllocJobList(JobsListDescr const& descr) = 0;
         virtual void     FreeJobList(JobsList jobList)            = 0;
 
-        virtual int32     GetNumJobLists() const     = 0;
-        virtual int32     GetNumFreeJobLists() const = 0;
-        virtual JobsList  GetJobList(int32 index)    = 0;
+        virtual int32    GetNumJobLists() const     = 0;
+        virtual int32    GetNumFreeJobLists() const = 0;
+        virtual JobsList GetJobList(int32 index)    = 0;
 
         virtual int32 GetNumProcessingUnits() const = 0;
         virtual void  WaitForAllJobLists()          = 0;
