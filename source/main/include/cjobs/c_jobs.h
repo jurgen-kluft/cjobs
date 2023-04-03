@@ -60,7 +60,6 @@ namespace cjobs
     {
         CONFIG_MAX_REGISTERED_JOBS = 256,
         CONFIG_MAX_THREADS         = 16,
-        CONFIG_MAX_JOBTHREADS      = 16,
         CONFIG_MAX_JOBLISTS        = 32,
     };
 

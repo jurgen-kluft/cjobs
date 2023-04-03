@@ -163,7 +163,7 @@ namespace cjobs
         struct SysWorkerThreadDescr
         {
             SysWorkerThreadDescr()
-                : Name(nullptr)
+                : Name("WorkerThread")
                 , Core(0)
                 , Priority(PRIORITY_NORMAL)
                 , StackSize(0)

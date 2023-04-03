@@ -205,7 +205,7 @@ namespace cjobs
             STATE_DONE     = 1 << 1,
             STATE_STALLED  = 1 << 2
         };
-        int32 RunJobs(uint32 mThreadNum, JobsListState_t& state, bool singleJob);
+        int32 RunJobs(uint32 threadIndex, JobsListState_t& state, bool singleJob);
 
         static const int32 NUM_DONE_GUARDS = 4; // cycle through 4 guards so we can cyclicly chain job lists
 
@@ -236,7 +236,7 @@ namespace cjobs
         JobsListStatsInstance mDeferredStats;
         JobsListStatsInstance mStats;
 
-        int32 RunJobsInternal(uint32 mThreadNum, JobsListState_t& state, bool singleJob);
+        int32 RunJobsInternal(uint32 threadIndex, JobsListState_t& state, bool singleJob);
 
         static void Nop(void* data) {}
 
@@ -478,7 +478,7 @@ namespace cjobs
     volatile void*    longJobData;
 #endif
 
-    int32 JobsListInstance::RunJobsInternal(uint32 mThreadNum, JobsListState_t& state, bool singleJob)
+    int32 JobsListInstance::RunJobsInternal(uint32 threadIndex, JobsListState_t& state, bool singleJob)
     {
         if (state.mVersion != mVersion.GetValue())
         {
@@ -486,7 +486,7 @@ namespace cjobs
             return STATE_DONE;
         }
 
-        DEBUG_ASSERT(mThreadNum < CONFIG_MAX_THREADS);
+        DEBUG_ASSERT(threadIndex < CONFIG_MAX_THREADS);
 
         if (mDeferredStats.mStartTime == 0)
         {
@@ -584,7 +584,7 @@ namespace cjobs
                 mJobsList[state.mNextJobIndex].function(mJobsList[state.mNextJobIndex].data);
 
                 uint64 jobEnd = g_Microseconds();
-                mDeferredStats.mThreadExecTime[mThreadNum] += jobEnd - jobStart;
+                mDeferredStats.mThreadExecTime[threadIndex] += jobEnd - jobStart;
 
 #ifdef PLATFORM_DEBUG
                 if (jobs_longJobMicroSec.GetInteger() > 0)
@@ -596,7 +596,7 @@ namespace cjobs
                         longJobData             = mJobsList[state.mNextJobIndex].data;
                         const char* jobName     = GetJobName(mJobsList[state.mNextJobIndex].function);
                         const char* jobListName = GetJobListName(GetId());
-                        g_Printf("%1.1f milliseconds for a single '%s' job from job list %s on thread %d\n", longJobTime, jobName, jobListName, mThreadNum);
+                        g_Printf("%1.1f milliseconds for a single '%s' job from job list %s on thread %d\n", longJobTime, jobName, jobListName, mThreadIndex);
                     }
                 }
 #endif
@@ -620,18 +620,18 @@ namespace cjobs
         return result;
     }
 
-    int32 JobsListInstance::RunJobs(uint32 mThreadNum, JobsListState_t& state, bool singleJob)
+    int32 JobsListInstance::RunJobs(uint32 threadIndex, JobsListState_t& state, bool singleJob)
     {
         int32  result = 0;
         uint64 start  = g_Microseconds();
 
         mNumThreadsExecuting.Increment();
         {
-            result = RunJobsInternal(mThreadNum, state, singleJob);
+            result = RunJobsInternal(threadIndex, state, singleJob);
         }
         mNumThreadsExecuting.Decrement();
 
-        mDeferredStats.mThreadTotalTime[mThreadNum] += g_Microseconds() - start;
+        mDeferredStats.mThreadTotalTime[threadIndex] += g_Microseconds() - start;
         return result;
     }
 
@@ -729,7 +729,7 @@ namespace cjobs
         int32             mJobListVersions[CONFIG_MAX_JOBLISTS]; // cyclic buffer with job lists
         uint16            mFirstJobList;                         // index of the last job list the thread grabbed
         uint16            mLastJobList;                          // index where the next job list to work on will be added
-        uint16            mThreadNum;
+        uint16            mThreadIndex;
 
         virtual int32 Run();
     };
@@ -739,7 +739,7 @@ namespace cjobs
         , mJobsPrioritize(jobsPrioritize)
         , mFirstJobList(0)
         , mLastJobList(0)
-        , mThreadNum(0)
+        , mThreadIndex(0)
     {
         for (int32 i = 0; i < CONFIG_MAX_JOBLISTS; ++i)
         {
@@ -750,9 +750,9 @@ namespace cjobs
 
     JobThread::~JobThread() {}
 
-    void JobThread::Start(uint16 _threadNum)
+    void JobThread::Start(uint16 _threadIndex)
     {
-        mThreadNum = _threadNum;
+        mThreadIndex = _threadIndex;
 
         csys::SysWorkerThreadDescr threadDescr;
         threadDescr.Name = mDescr.Name;
@@ -842,7 +842,7 @@ namespace cjobs
             const bool singleJob = (priority == JOBSLIST_PRIORITY_HIGH) ? false : ((mJobsPrioritize != nullptr) ? *mJobsPrioritize : false);
 
             // try running one or more jobs from the current job list
-            const int32 result = threadJobListState[currentJobList].mJobsList->RunJobs(mThreadNum, threadJobListState[currentJobList], singleJob);
+            const int32 result = threadJobListState[currentJobList].mJobsList->RunJobs(mThreadIndex, threadJobListState[currentJobList], singleJob);
 
             if ((result & JobsListInstance::STATE_DONE) != 0)
             {
@@ -901,7 +901,7 @@ namespace cjobs
         void Submit(JobsListInstance* jobsList, int32 parallelism);
 
         Alloc*                   mAllocator;
-        JobThread*               mThreads[CONFIG_MAX_JOBTHREADS];
+        JobThread*               mThreads[CONFIG_MAX_THREADS];
         bool                     mJobsPrioritize;
         uint32                   mMaxThreads;
         Array<JobsListInstance*> mJobLists;
@@ -930,19 +930,20 @@ namespace cjobs
 
     void JobsManagerLocal::Init(JobsThreadDescr threads[], int32 num)
     {
+        DEBUG_ASSERT(num < CONFIG_MAX_THREADS);
         mJobLists.SetCapacity(mAllocator, CONFIG_MAX_JOBLISTS);
 
-        for (int32 i = 0; i < num; i++)
+        for (int32 threadIndex = 0; threadIndex < num; threadIndex++)
         {
-            mThreads[i] = Construct<JobThread>(mAllocator, TAG_JOBTHREAD, threads[i], &mJobsPrioritize);
-            mThreads[i]->Start(i);
+            mThreads[threadIndex] = Construct<JobThread>(mAllocator, TAG_JOBTHREAD, threads[threadIndex], &mJobsPrioritize);
+            mThreads[threadIndex]->Start(threadIndex);
         }
         mMaxThreads = num;
     }
 
     void JobsManagerLocal::Shutdown()
     {
-        for (int32 i = 0; i < CONFIG_MAX_JOBTHREADS; i++)
+        for (int32 i = 0; i < CONFIG_MAX_THREADS; i++)
         {
             mThreads[i]->StopThread();
             Destruct(mAllocator, mThreads[i]);
