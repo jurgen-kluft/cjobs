@@ -99,6 +99,7 @@ namespace cjobs
             {
                 return true;
             }
+            return false;
         }
 
         int32 SysWorkerThread::ThreadProc(SysWorkerThread* thread)

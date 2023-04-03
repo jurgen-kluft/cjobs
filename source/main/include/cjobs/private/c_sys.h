@@ -21,8 +21,11 @@ namespace cjobs
         typedef int32              core_t;
 
         typedef int32  interlockedInt_t;
-        typedef uint64 signalHandle_t;
-        typedef uint64 mutexHandle_t;
+        typedef void*  signalHandle_t;
+        struct mutexHandle_t
+        {
+            uint64 container[8];
+        };
         typedef uint64 threadHandle_t;
         typedef uint32 threadId_t;
 
@@ -75,7 +78,7 @@ namespace cjobs
         {
         public:
             SysMutex()
-                : mHandle(0)
+                : mHandle()
             {
                 SysMutexCreate(mHandle);
             }
@@ -89,7 +92,7 @@ namespace cjobs
 
         private:
             SysMutex(const SysMutex& s)
-                : mHandle(0)
+                : mHandle()
             {
             }
             void operator=(const SysMutex& s) {}

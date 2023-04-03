@@ -104,7 +104,6 @@ namespace cjobs
     };
 
     class JobsListInstance;
-
     class JobsList
     {
     public:
@@ -171,31 +170,38 @@ namespace cjobs
         const uint32              Color;
     };
 
+    class JobsManagerLocal;
     class JobsManager
     {
     public:
-        virtual ~JobsManager() {}
+        void Init(JobsThreadDescr threads[], int32 num);
+        void Shutdown();
 
-        virtual void Init(JobsThreadDescr threads[], int32 num) = 0;
-        virtual void Shutdown()                                 = 0;
+        JobsList AllocJobList(JobsListDescr const& descr);
+        void     FreeJobList(JobsList& jobList);
 
-        virtual JobsList AllocJobList(JobsListDescr const& descr) = 0;
-        virtual void     FreeJobList(JobsList jobList)            = 0;
+        int32    GetNumJobLists() const;
+        int32    GetNumFreeJobLists() const;
+        JobsList GetJobList(int32 index);
 
-        virtual int32    GetNumJobLists() const     = 0;
-        virtual int32    GetNumFreeJobLists() const = 0;
-        virtual JobsList GetJobList(int32 index)    = 0;
+        int32 GetNumProcessingUnits() const;
+        void  WaitForAllJobLists();
 
-        virtual int32 GetNumProcessingUnits() const = 0;
-        virtual void  WaitForAllJobLists()          = 0;
+        bool        IsRegisteredJob(JobRun_t function) const;
+        void        RegisterJob(JobRun_t function, const char* name);
+        const char* GetJobName(JobRun_t function) const;
 
-        virtual bool        IsRegisteredJob(JobRun_t function) const         = 0;
-        virtual void        RegisterJob(JobRun_t function, const char* name) = 0;
-        virtual const char* GetJobName(JobRun_t function) const              = 0;
+        static JobsManager Create(Alloc* allocator);
+        static void        Destroy(JobsManager& manager);
+
+    protected:
+        friend class JobsManagerLocal;
+        JobsManager(JobsManagerLocal* instance)
+            : mInstance(instance)
+        {
+        }
+        JobsManagerLocal* mInstance;
     };
-
-    JobsManager* CreateJobManager(Alloc* allocator);
-    void         DestroyJobManager(JobsManager* manager);
 
 } // namespace cjobs
 

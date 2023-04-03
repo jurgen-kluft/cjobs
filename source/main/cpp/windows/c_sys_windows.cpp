@@ -70,12 +70,12 @@ namespace cjobs
             wchar_t wname[64];
             MultiByteToWideChar(CP_UTF8, MB_PRECOMPOSED, name, -1, wname, _countof(wname)-1);
 
-            HRESULT hr = SetThreadDescription((HANDLE)handle, wname);
-            if (FAILED(hr))
+            HRESULT hr = ::SetThreadDescription((HANDLE)handle, wname);
+            if (SUCCEEDED(hr))
             {
-                return false;
+                return true;
             }
-            return true;
+            return false;
         }
 
         threadHandle_t SysCreateThread(ThreadFunc_t function, void* parms, EPriority priority, const char* name, core_t core, int32 stackSize, bool suspended)
@@ -95,23 +95,23 @@ namespace cjobs
 
             if (priority == PRIORITY_HIGHEST)
             {
-                SetThreadPriority((HANDLE)handle, THREAD_PRIORITY_HIGHEST); //  we better sleep enough to do this
+                ::SetThreadPriority((HANDLE)handle, THREAD_PRIORITY_HIGHEST); //  we better sleep enough to do this
             }
             else if (priority == PRIORITY_ABOVE_NORMAL)
             {
-                SetThreadPriority((HANDLE)handle, THREAD_PRIORITY_ABOVE_NORMAL);
+                ::SetThreadPriority((HANDLE)handle, THREAD_PRIORITY_ABOVE_NORMAL);
             }
             else if (priority == PRIORITY_BELOW_NORMAL)
             {
-                SetThreadPriority((HANDLE)handle, THREAD_PRIORITY_BELOW_NORMAL);
+                ::SetThreadPriority((HANDLE)handle, THREAD_PRIORITY_BELOW_NORMAL);
             }
             else if (priority == PRIORITY_LOWEST)
             {
-                SetThreadPriority((HANDLE)handle, THREAD_PRIORITY_LOWEST);
+                ::SetThreadPriority((HANDLE)handle, THREAD_PRIORITY_LOWEST);
             }
 
             // Under Windows, we don't set the thread affinity and let the OS deal with scheduling
-            // SetThreadAffinityMask((HANDLE)handle, 1<<core);
+            // ::SetThreadAffinityMask((HANDLE)handle, 1<<core);
 
             return (threadHandle_t)handle;
         }
@@ -119,7 +119,7 @@ namespace cjobs
         threadId_t SysGetCurrentThreadID() { return (threadId_t)::GetCurrentThreadId(); }
         threadHandle_t SysGetCurrentThread() { return (threadHandle_t)::GetCurrentThread(); }
 
-        void      SysWaitForThread(threadHandle_t threadHandle) { WaitForSingleObject((HANDLE)threadHandle, INFINITE); }
+        void SysWaitForThread(threadHandle_t threadHandle) { ::WaitForSingleObject((HANDLE)threadHandle, INFINITE); }
 
         void SysDestroyThread(threadHandle_t threadHandle)
         {
@@ -127,15 +127,15 @@ namespace cjobs
             {
                 return;
             }
-            WaitForSingleObject((HANDLE)threadHandle, INFINITE);
-            CloseHandle((HANDLE)threadHandle);
+            ::WaitForSingleObject((HANDLE)threadHandle, INFINITE);
+            ::CloseHandle((HANDLE)threadHandle);
         }
 
         void SysYield() { SwitchToThread(); }
 
-        void SysSignalCreate(signalHandle_t& handle, bool manualReset) { handle = (signalHandle_t)CreateEvent(NULL, manualReset, FALSE, NULL); }
-        void SysSignalDestroy(signalHandle_t& handle) { CloseHandle((HANDLE)handle); }
-        void SysSignalRaise(signalHandle_t& handle) { SetEvent((HANDLE)handle); }
+        void SysSignalCreate(signalHandle_t& handle, bool manualReset) { handle = (signalHandle_t)::CreateEvent(NULL, manualReset, FALSE, NULL); }
+        void SysSignalDestroy(signalHandle_t& handle) { ::CloseHandle((HANDLE)handle); }
+        void SysSignalRaise(signalHandle_t& handle) { ::SetEvent((HANDLE)handle); }
         void SysSignalClear(signalHandle_t& handle)
         {
             // events are created as auto-reset so this should never be needed
@@ -144,30 +144,30 @@ namespace cjobs
 
         bool SysSignalWait(signalHandle_t& handle, int32 timeout)
         {
-            DWORD result = WaitForSingleObject((HANDLE)handle, timeout == SysSignal::WAIT_INFINITE ? INFINITE : timeout);
+            DWORD result = ::WaitForSingleObject((HANDLE)handle, timeout == SysSignal::WAIT_INFINITE ? INFINITE : timeout);
 
 //            assert(result == WAIT_OBJECT_0 || (timeout != SysSignal::WAIT_INFINITE && result == WAIT_TIMEOUT));
 
             return (result == WAIT_OBJECT_0);
         }
 
-        void SysMutexCreate(mutexHandle_t& handle) { InitializeCriticalSection((LPCRITICAL_SECTION)&handle); }
-        void SysMutexDestroy(mutexHandle_t& handle) { DeleteCriticalSection((LPCRITICAL_SECTION)&handle); }
+        void SysMutexCreate(mutexHandle_t& handle) { ::InitializeCriticalSection((LPCRITICAL_SECTION)&handle); }
+        void SysMutexDestroy(mutexHandle_t& handle) { ::DeleteCriticalSection((LPCRITICAL_SECTION)&handle); }
 
         bool SysMutexLock(mutexHandle_t& handle, bool blocking)
         {
-            if (TryEnterCriticalSection((LPCRITICAL_SECTION)&handle) == 0)
+            if (::TryEnterCriticalSection((LPCRITICAL_SECTION)&handle) == 0)
             {
                 if (!blocking)
                 {
                     return false;
                 }
-                EnterCriticalSection((LPCRITICAL_SECTION)&handle);
+                ::EnterCriticalSection((LPCRITICAL_SECTION)&handle);
             }
             return true;
         }
 
-        void SysMutexUnlock(mutexHandle_t& handle) { LeaveCriticalSection((LPCRITICAL_SECTION)&handle); }       
+        void SysMutexUnlock(mutexHandle_t& handle) { ::LeaveCriticalSection((LPCRITICAL_SECTION)&handle); }       
 
         typedef LONG volatile* pvAtomicInt32;
 

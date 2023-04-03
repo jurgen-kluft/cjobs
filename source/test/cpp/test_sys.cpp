@@ -18,47 +18,46 @@ UNITTEST_SUITE_BEGIN(TestSys)
         class Allocator : public cjobs::Alloc
         {
         public:
-            virtual void* v_Allocate(cjobs::uint64 size, cjobs::int32 alignment, cjobs::int32 tag = 0) 
-            { 
+            virtual void* v_Allocate(cjobs::uint64 size, cjobs::int32 alignment, cjobs::int32 tag = 0)
+            {
                 void* mem = gTestAllocator->allocate((ncore::s32)size, (ncore::s32)alignment);
                 return mem;
             }
 
-            virtual void  v_Deallocate(void* ptr) { gTestAllocator->deallocate(ptr);            }
+            virtual void v_Deallocate(void* ptr) { gTestAllocator->deallocate(ptr); }
         };
 
-        void JobRun(void* params)
-        {
-
-        }
-
+        void JobRun(void* params) {}
 
         UNITTEST_TEST(TestList)
         {
-            Allocator           allocator;
-            cjobs::JobsManager* manager = cjobs::CreateJobManager(&allocator);
+            Allocator          allocator;
+            cjobs::JobsManager manager = cjobs::JobsManager::Create(&allocator);
+
+            manager.RegisterJob(JobRun, "TestJob");
 
             cjobs::JobsThreadDescr threads[] = {
-                cjobs::JobsThreadDescr("JobThread1", 0, 256*1024 ),
-                cjobs::JobsThreadDescr("JobThread2", 0, 256*1024 ),
-                cjobs::JobsThreadDescr("JobThread3", 0, 256*1024 ),
-                cjobs::JobsThreadDescr("JobThread4", 0, 256*1024 ),
+                //                       name, core, stack-size
+                cjobs::JobsThreadDescr("JobThread1", 0, 0),
+                cjobs::JobsThreadDescr("JobThread2", 0, 0),
+                cjobs::JobsThreadDescr("JobThread3", 0, 0),
+                cjobs::JobsThreadDescr("JobThread4", 0, 0),
             };
 
-            manager->Init(threads, _countof(threads));
+            manager.Init(threads, _countof(threads));
 
-            cjobs::JobsListDescr myListDescr("List1", cjobs::JOBSLIST_PRIORITY_LOW,  256, 256, cjobs::COLOR_RED);
-            cjobs::JobsList* myList = manager->AllocJobList(myListDescr);
+            cjobs::JobsListDescr myListDescr("List1", cjobs::JOBSLIST_PRIORITY_LOW, 256, 256, cjobs::COLOR_RED);
+            cjobs::JobsList      myList = manager.AllocJobList(myListDescr);
 
-            myList->AddJob(JobRun, (void*)"test");
-            myList->Submit();
-            myList->Wait();
+            myList.AddJob(JobRun, (void*)"test");
+            myList.Submit();
+            myList.Wait();
 
-            manager->FreeJobList(myList);
-            manager->Shutdown();
+            manager.FreeJobList(myList);
+            manager.Shutdown();
+
+            cjobs::JobsManager::Destroy(manager);
         }
-
-
     }
 }
 UNITTEST_SUITE_END

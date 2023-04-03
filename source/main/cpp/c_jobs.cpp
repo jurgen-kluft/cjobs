@@ -10,11 +10,25 @@ namespace cjobs
 {
     typedef csys::SysInterlockedInteger InterlockedInt;
 
+    extern uint64 g_Microseconds();
+
+    extern void g_Printf(const char* format, ...);
+    extern void g_Error(const char* format, ...);
+    extern void g_AssertFailed(const char* file, int line, const char* expression);
+
+#define DEBUG_ASSERT(x)                         \
+    if (!(x))                                   \
+    {                                           \
+        g_AssertFailed(__FILE__, __LINE__, #x); \
+    }
+
+#define DEBUG_VERIFY(x) ((x) ? true : (g_AssertFailed(__FILE__, __LINE__, #x), false))
+
     //-----------------------------------------------------------------------------
     template <typename T, typename... Args> inline T* Construct(Alloc* a, int32 tag, Args&&... args)
     {
-        void* mem = a->Allocate(sizeof(T), sizeof(void*), tag));
-        return new (mem) T((args...);
+        void* mem = a->Allocate(sizeof(T), sizeof(void*), tag);
+        return new (mem) T(args...);
     }
 
     template <typename T> inline void Destruct(Alloc* a, T* ptr)
@@ -105,20 +119,6 @@ namespace cjobs
         --mCount;
     }
 
-    extern uint64 g_Microseconds();
-
-    extern void g_Printf(const char* format, ...);
-    extern void g_Error(const char* format, ...);
-    extern void g_AssertFailed(const char* file, int line, const char* expression);
-
-#define DEBUG_ASSERT(x)                         \
-    if (!(x))                                   \
-    {                                           \
-        g_AssertFailed(__FILE__, __LINE__, #x); \
-    }
-
-#define DEBUG_VERIFY(x) ((x) ? true : (g_AssertFailed(__FILE__, __LINE__, #x), false))
-
     struct JobsListState_t
     {
         JobsListState_t()
@@ -177,7 +177,7 @@ namespace cjobs
     class JobsListInstance
     {
     public:
-        JobsListInstance(Alloc* allocator, JobsListId_t id, JobsListDescr const& descr);
+        JobsListInstance(JobsManagerLocal* manager, JobsRegister* jobsRegister, Alloc * allocator, JobsListId_t id, JobsListDescr const& descr);
         ~JobsListInstance();
 
         // These are called from the one thread that manages this list.
@@ -207,20 +207,27 @@ namespace cjobs
         };
         int32 RunJobs(uint32 threadIndex, JobsListState_t& state, bool singleJob);
 
+        void* operator new(uint64 num_bytes, void* mem) { return mem; }
+        void  operator delete(void* mem, void*) {}
+        void* operator new(uint64 num_bytes) noexcept { return nullptr; }
+        void  operator delete(void* mem) {}
+
         static const int32 NUM_DONE_GUARDS = 4; // cycle through 4 guards so we can cyclicly chain job lists
 
-        Alloc*          mAllocator;
-        bool            mThreaded;
-        bool            mDone;
-        bool            mHasSignal;
-        JobsListId_t    mListId;
-        JobsListDescr   mDescr;
-        uint32          mNumSyncs;
-        int32           mLastSignalJob;
-        InterlockedInt* mWaitForGuard;
-        InterlockedInt  mDoneGuards[NUM_DONE_GUARDS];
-        int32           mCurrentDoneGuard;
-        InterlockedInt  mVersion;
+        JobsManagerLocal* mManager;
+        JobsRegister*     mJobsRegister;
+        Alloc*            mAllocator;
+        bool              mThreaded;
+        bool              mDone;
+        bool              mHasSignal;
+        JobsListId_t      mListId;
+        JobsListDescr     mDescr;
+        int16             mNumSyncs;
+        int32             mLastSignalJob;
+        InterlockedInt*   mWaitForGuard;
+        InterlockedInt    mDoneGuards[NUM_DONE_GUARDS];
+        int32             mCurrentDoneGuard;
+        InterlockedInt    mVersion;
         struct job_t
         {
             JobRun_t function;
@@ -232,7 +239,6 @@ namespace cjobs
         InterlockedInt        mCurrentJob;
         InterlockedInt        mFetchLock;
         InterlockedInt        mNumThreadsExecuting;
-        JobsRegister*         mJobsRegister;
         JobsListStatsInstance mDeferredStats;
         JobsListStatsInstance mStats;
 
@@ -249,8 +255,76 @@ namespace cjobs
     int32 JobsListInstance::JOB_SYNCHRONIZE;
     int32 JobsListInstance::JOB_LIST_DONE;
 
-    JobsListInstance::JobsListInstance(Alloc* allocator, JobsListId_t id, JobsListDescr const& descr)
-        : mAllocator(allocator)
+    class JobThread : public csys::SysWorkerThread
+    {
+    public:
+        JobThread(JobsThreadDescr descr, bool* jobsPrioritize);
+        ~JobThread();
+
+        void Start(uint16 threadNum);
+        void AddJobList(JobsListInstance* jobsList);
+
+        void* operator new(uint64 num_bytes, void* mem) { return mem; }
+        void  operator delete(void* mem, void*) {}
+        void* operator new(uint64 num_bytes) noexcept { return nullptr; }
+        void  operator delete(void* mem) {}
+
+    protected:
+        JobsThreadDescr   mDescr;
+        csys::SysMutex    mAddJobMutex;
+        JobsListInstance* mJobListInstances[CONFIG_MAX_JOBLISTS]; // cyclic buffer with job lists
+        bool*             mJobsPrioritize;
+        int32             mJobListVersions[CONFIG_MAX_JOBLISTS]; // cyclic buffer with job lists
+        uint16            mFirstJobList;                         // index of the last job list the thread grabbed
+        uint16            mLastJobList;                          // index where the next job list to work on will be added
+        uint16            mThreadIndex;
+
+        virtual int32 Run();
+    };
+
+    class JobsManagerLocal
+    {
+    public:
+        JobsManagerLocal(Alloc* allocator);
+        ~JobsManagerLocal() {}
+
+        void Init(JobsThreadDescr threads[], int32 num);
+        void Shutdown();
+
+        JobsList AllocJobList(JobsListDescr const& descr);
+        void     FreeJobList(JobsList& jobsList);
+
+        int32    GetNumJobLists() const;
+        int32    GetNumFreeJobLists() const;
+        JobsList GetJobList(int32 index);
+
+        int32 GetNumProcessingUnits() const;
+
+        void WaitForAllJobLists();
+
+        bool        IsRegisteredJob(JobRun_t function) const;
+        void        RegisterJob(JobRun_t function, const char* name);
+        const char* GetJobName(JobRun_t function) const;
+
+        void Submit(JobsListInstance* jobsList, int32 parallelism);
+
+        void* operator new(uint64 num_bytes, void* mem) { return mem; }
+        void  operator delete(void* mem, void*) {}
+        void* operator new(uint64 num_bytes) noexcept { return nullptr; }
+        void  operator delete(void* mem) {}
+
+        Alloc*                   mAllocator;
+        JobThread*               mThreads[CONFIG_MAX_THREADS];
+        bool                     mJobsPrioritize;
+        uint32                   mMaxThreads;
+        Array<JobsListInstance*> mJobLists;
+        JobsRegister             mJobsRegister;
+    };
+
+    JobsListInstance::JobsListInstance(JobsManagerLocal* manager, JobsRegister* jobsRegister, Alloc* allocator, JobsListId_t id, JobsListDescr const& descr)
+        : mManager(manager)
+        , mJobsRegister(jobsRegister)
+        , mAllocator(allocator)
         , mThreaded(true)
         , mDone(true)
         , mHasSignal(false)
@@ -258,6 +332,7 @@ namespace cjobs
         , mDescr(descr)
         , mNumSyncs(0)
         , mLastSignalJob(0)
+        , mJobListIndexDebug(0)
         , mWaitForGuard(nullptr)
         , mCurrentDoneGuard(0)
         , mJobsList()
@@ -371,7 +446,7 @@ namespace cjobs
     {
         DEBUG_ASSERT(mDone);
         DEBUG_ASSERT(mNumSyncs <= mDescr.MaxSyncs);
-        DEBUG_ASSERT((uint32)mJobsList.Count() <= mDescr.MaxJobs + mNumSyncs * 2);
+        DEBUG_ASSERT(mJobsList.Count() <= mDescr.MaxJobs + mNumSyncs * 2);
         DEBUG_ASSERT(mFetchLock.GetValue() == 0);
 
         mDone = false;
@@ -412,8 +487,7 @@ namespace cjobs
         if (mThreaded)
         {
             // hand over to the manager
-            void SubmitJobList(JobsListInstance * mJobsList, int32 parallelism);
-            SubmitJobList(this, parallelism);
+            mManager->Submit(this, parallelism);
         }
         else
         {
@@ -660,10 +734,17 @@ namespace cjobs
     JobsList::JobsList(JobsListInstance* instance)
         : mJobsListInstance(instance)
     {
-        DEBUG_ASSERT(instance->mDescr.Priority > JOBSLIST_PRIORITY_NONE);
+        DEBUG_ASSERT(instance == nullptr || instance->mDescr.Priority > JOBSLIST_PRIORITY_NONE);
     }
 
-    JobsList::~JobsList() { Destruct(mJobsListInstance->mAllocator, mJobsListInstance); }
+    JobsList::~JobsList() 
+    { 
+        if (mJobsListInstance != nullptr)
+        {
+            Destruct(mJobsListInstance->mAllocator, mJobsListInstance);
+            mJobsListInstance = nullptr;
+        }
+    }
 
     void JobsList::AddJob(JobRun_t function, void* data)
     {
@@ -711,28 +792,6 @@ namespace cjobs
     bool JobsList::operator>=(const JobsList& other) const { return mJobsListInstance->GetDescr().Priority >= other.mJobsListInstance->GetDescr().Priority; }
 
     const int32 JOB_THREAD_STACK_SIZE = 256 * 1024; // same size as the SPU local store
-
-    class JobThread : public csys::SysWorkerThread
-    {
-    public:
-        JobThread(JobsThreadDescr descr, bool* jobsPrioritize);
-        ~JobThread();
-
-        void Start(uint16 threadNum);
-        void AddJobList(JobsListInstance* jobsList);
-
-    protected:
-        JobsThreadDescr   mDescr;
-        csys::SysMutex    mAddJobMutex;
-        JobsListInstance* mJobListInstances[CONFIG_MAX_JOBLISTS]; // cyclic buffer with job lists
-        bool*             mJobsPrioritize;
-        int32             mJobListVersions[CONFIG_MAX_JOBLISTS]; // cyclic buffer with job lists
-        uint16            mFirstJobList;                         // index of the last job list the thread grabbed
-        uint16            mLastJobList;                          // index where the next job list to work on will be added
-        uint16            mThreadIndex;
-
-        virtual int32 Run();
-    };
 
     JobThread::JobThread(JobsThreadDescr descr, bool* jobsPrioritize)
         : mDescr(descr)
@@ -874,58 +933,17 @@ namespace cjobs
         return 0;
     }
 
-    class JobsManagerLocal : public JobsManager
-    {
-    public:
-        JobsManagerLocal(Alloc* allocator);
-        virtual ~JobsManagerLocal() {}
-
-        virtual void Init(JobsThreadDescr threads[], int32 num);
-        virtual void Shutdown();
-
-        virtual JobsList AllocJobList(JobsListDescr const& descr);
-        virtual void     FreeJobList(JobsList jobsList);
-
-        virtual int32    GetNumJobLists() const;
-        virtual int32    GetNumFreeJobLists() const;
-        virtual JobsList GetJobList(int32 index);
-
-        virtual int32 GetNumProcessingUnits() const;
-
-        virtual void WaitForAllJobLists();
-
-        virtual bool        IsRegisteredJob(JobRun_t function) const;
-        virtual void        RegisterJob(JobRun_t function, const char* name);
-        virtual const char* GetJobName(JobRun_t function) const;
-
-        void Submit(JobsListInstance* jobsList, int32 parallelism);
-
-        Alloc*                   mAllocator;
-        JobThread*               mThreads[CONFIG_MAX_THREADS];
-        bool                     mJobsPrioritize;
-        uint32                   mMaxThreads;
-        Array<JobsListInstance*> mJobLists;
-        JobsRegister             mJobsRegister;
-    };
-
     JobsManagerLocal::JobsManagerLocal(Alloc* allocator)
         : mAllocator(allocator)
+        , mJobsPrioritize(false)
         , mMaxThreads(0)
         , mJobLists()
         , mJobsRegister()
     {
-    }
-
-    JobsManager* CreateJobManager(Alloc* allocator)
-    {
-        JobsManagerLocal* manager = Construct<JobsManagerLocal>(allocator, TAG_JOBMANAGER, allocator);
-        return manager;
-    }
-
-    void DestroyJobManager(JobsManager* manager)
-    {
-        JobsManagerLocal* localManager = static_cast<JobsManagerLocal*>(manager);
-        Destruct(localManager->mAllocator, localManager);
+        for (int32 i = 0; i < CONFIG_MAX_THREADS; i++)
+        {
+            mThreads[i] = nullptr;
+        }
     }
 
     void JobsManagerLocal::Init(JobsThreadDescr threads[], int32 num)
@@ -945,8 +963,12 @@ namespace cjobs
     {
         for (int32 i = 0; i < CONFIG_MAX_THREADS; i++)
         {
-            mThreads[i]->StopThread();
-            Destruct(mAllocator, mThreads[i]);
+            if (mThreads[i] != nullptr)
+            {
+                mThreads[i]->StopThread();
+                Destruct(mAllocator, mThreads[i]);
+                mThreads[i] = nullptr;
+            }
         }
         mJobLists.SetCapacity(mAllocator, 0);
     }
@@ -955,11 +977,11 @@ namespace cjobs
     {
         JobsListId_t       id      = mJobLists.Count();
         JobsListInstance*& jobList = mJobLists.Append();
-        jobList                    = Construct<JobsListInstance>(mAllocator, TAG_JOBLIST, mAllocator, id, descr);
+        jobList                    = Construct<JobsListInstance>(mAllocator, TAG_JOBLIST, this, &mJobsRegister, mAllocator, id, descr);
         return JobsList(jobList);
     }
 
-    void JobsManagerLocal::FreeJobList(JobsList jobList)
+    void JobsManagerLocal::FreeJobList(JobsList& jobList)
     {
         if (jobList.mJobsListInstance == nullptr)
         {
@@ -977,6 +999,9 @@ namespace cjobs
         mJobLists[index]->Wait();
         Destruct<JobsListInstance>(mAllocator, jobList.mJobsListInstance);
         mJobLists.Remove(index);
+
+        // ok, job list instance has been released
+        jobList.mJobsListInstance = nullptr;
     }
 
     int32    JobsManagerLocal::GetNumJobLists() const { return mJobLists.Count(); }
@@ -1018,6 +1043,40 @@ namespace cjobs
     bool        JobsManagerLocal::IsRegisteredJob(JobRun_t function) const { return mJobsRegister.IsRegisteredJob(function); }
     void        JobsManagerLocal::RegisterJob(JobRun_t function, const char* name) { mJobsRegister.RegisterJob(function, name); }
     const char* JobsManagerLocal::GetJobName(JobRun_t function) const { return mJobsRegister.GetJobNameByFunction(function); }
+
+    JobsManager JobsManager::Create(Alloc* allocator)
+    {
+        JobsManagerLocal* manager = Construct<JobsManagerLocal>(allocator, TAG_JOBMANAGER, allocator);
+        return JobsManager(manager);
+    }
+
+    void JobsManager::Destroy(JobsManager& manager)
+    {
+        JobsManagerLocal* localManager = static_cast<JobsManagerLocal*>(manager.mInstance);
+        Destruct(localManager->mAllocator, localManager);
+        manager.mInstance = nullptr;
+    }
+
+    // JobsManager
+
+    void JobsManager::Init(JobsThreadDescr threads[], int32 num) { mInstance->Init(threads, num); }
+    void JobsManager::Shutdown() { mInstance->Shutdown(); }
+
+    JobsList JobsManager::AllocJobList(JobsListDescr const& descr) { return mInstance->AllocJobList(descr); }
+    void     JobsManager::FreeJobList(JobsList& jobList) { mInstance->FreeJobList(jobList); }
+
+    int32    JobsManager::GetNumJobLists() const { return mInstance->GetNumJobLists(); }
+    int32    JobsManager::GetNumFreeJobLists() const { return mInstance->GetNumFreeJobLists(); }
+    JobsList JobsManager::GetJobList(int32 index) { return mInstance->GetJobList(index); }
+
+    int32 JobsManager::GetNumProcessingUnits() const { return mInstance->GetNumProcessingUnits(); }
+    void  JobsManager::WaitForAllJobLists() { mInstance->WaitForAllJobLists(); }
+
+    bool        JobsManager::IsRegisteredJob(JobRun_t function) const { return mInstance->IsRegisteredJob(function); }
+    void        JobsManager::RegisterJob(JobRun_t function, const char* name) { mInstance->RegisterJob(function, name); }
+    const char* JobsManager::GetJobName(JobRun_t function) const { return mInstance->GetJobName(function); }
+
+    // JobsRegister
 
     JobsRegister::JobsRegister()
         : mNumRegisteredJobs(0)
