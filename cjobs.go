@@ -7,5 +7,6 @@ import (
 
 func main() {
 	ccode.Init()
+	ccode.GenerateFiles()
 	ccode.Generate(cjobs.GetPackage())
 }
