@@ -9,7 +9,7 @@ namespace ncore
 {
     class alloc_t;
 
-    namespace njobs
+    namespace njob
     {
         struct queue_t;
 
@@ -21,12 +21,12 @@ namespace ncore
         //    destroy_queue(queue);
 
         queue_t* create_queue(alloc_t* allocator, s32 item_count, s32 item_size);
-        void     destroy_queue(queue_t* queue);
+        void     destroy_queue(alloc_t* allocator, queue_t* queue);
 
         void queue_enqueue(queue_t* queue, void* item);
         bool queue_dequeue(queue_t* queue, void* item);
 
-    } // namespace njobs
+    } // namespace njob
 
 } // namespace ncore
 
