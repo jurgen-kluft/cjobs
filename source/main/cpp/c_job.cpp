@@ -43,10 +43,11 @@ namespace ncore
                 semaphore_create(mach_task_self(), &m_done, SYNC_POLICY_FIFO, count);
                 m_done_count.store(0);
             }
-            inline void done()
+            inline bool done()
             {
-                m_done_count.fetch_add(1);
+                s32 const done = m_done_count.fetch_add(1);
                 semaphore_signal(m_done);
+                return done == m_total_count - 1;
             }
             inline void exit() { semaphore_destroy(mach_task_self(), m_done); }
             inline bool is_done() const { return m_done_count.load() == m_total_count; }
@@ -68,7 +69,7 @@ namespace ncore
             s32              m_innerloop_batch_count;
             job_handle_t*    m_dependency;
             job_done_t       m_done;
-            std::atomic<s32> m_ref_count; // Number of 
+            std::atomic<s32> m_ref_count; // Number of
         };
 
         struct work_t
@@ -84,9 +85,10 @@ namespace ncore
             job_t*   m_jobs;       // Array of jobs, job_t[m_max_jobs]
             queue_t* m_jobs_queue; // Any worker can take a job from this queue and schedule it, queue<job_t*>
 
-            u32      m_max_work_items;  // Maximum number of work items that can be active
-            work_t*  m_work_items;      // Array of work items, work_t[m_max_work_items]
-            queue_t* m_work_item_queue; // Any worker can take a work item from this queue and schedule it in 'm_scheduled_work', queue<work_t*>
+            u32     m_max_work_items; // Maximum number of work items that can be active
+            work_t* m_work_items;     // Array of work items, work_t[m_max_work_items]
+            alignas(64) std::atomic<s32> m_work_item_head;
+            alignas(64) std::atomic<s32> m_work_item_tail;
 
             u32       m_max_workers;      // Number of worker threads
             queue_t*  m_inactive_workers; // Worker threads that have no work, queue<s32>
@@ -102,7 +104,6 @@ namespace ncore
             job_t* job_item = nullptr;
             queue_dequeue(ctx->m_jobs_queue, &job_item);
             job_item->m_job                   = job;
-            job_item->m_type                  = EJobType::Single;
             job_item->m_array_length          = 1;
             job_item->m_innerloop_batch_count = 1;
             job_item->m_dependency            = nullptr;
@@ -126,7 +127,6 @@ namespace ncore
             job_t* job_item = nullptr;
             queue_dequeue(ctx->m_jobs_queue, &job_item);
             job_item->m_job                   = job;
-            job_item->m_type                  = EJobType::ParallelFor;
             job_item->m_array_length          = array_length;
             job_item->m_innerloop_batch_count = array_length;
             job_item->m_dependency            = nullptr;
@@ -150,7 +150,6 @@ namespace ncore
             job_t* job_item = nullptr;
             queue_dequeue(ctx->m_jobs_queue, &job_item);
             job_item->m_job                   = job;
-            job_item->m_type                  = EJobType::ParallelFor;
             job_item->m_array_length          = array_length;
             job_item->m_innerloop_batch_count = innerloop_batch_count;
             job_item->m_dependency            = nullptr;
@@ -182,6 +181,57 @@ namespace ncore
             context_t* m_ctx;
             s32        m_index; // Worker index
         };
+
+        static void s_worker_thread(worker_t* worker)
+        {
+            context_t* ctx   = worker->m_ctx;
+            s32 const  index = worker->m_index;
+
+            while (true)
+            {
+                // Wait for work
+                work_t* work = nullptr;
+                queue_dequeue(ctx->m_scheduled_work[index], &work);
+
+                if (work == nullptr)
+                {
+                    // No work, steal work from other worker queues
+                    for (s32 i = 0; i < ctx->m_max_workers; ++i)
+                    {
+                        if (i == index)
+                            continue;
+
+                        if (queue_dequeue(ctx->m_scheduled_work[i], &work))
+                            break;
+                    }
+                }
+
+                if (work == nullptr)
+                {
+                    // No work, enqueue worker to inactive workers
+                    queue_enqueue(ctx->m_inactive_workers, &worker->m_index);
+                    // Wait for work, semaphore_wait(ctx->m_semaphores[index]);
+                    continue;
+                }
+
+                // Execute work
+                for (s32 i = work->m_start; i < work->m_end; ++i)
+                {
+                    work->m_job->m_job->execute(i);
+                }
+
+                if (work->m_job->m_done.done())
+                {
+                    // Job is done
+                    queue_enqueue(ctx->m_jobs_queue, &work->m_job);
+                }
+
+                // Return work item ?
+                // The whole range of work items can be release once this job itself is done
+                // So no need to actually free work items like this
+                // queue_enqueue(ctx->m_work_item_queue, &work);
+            }
+        }
 
         // Example of granularity being too fine:
         //    array_length = 10000, innerloop_batch_count = 10, this means we will schedule 1000 work items.
