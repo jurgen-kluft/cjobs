@@ -14,14 +14,19 @@ namespace ncore
         struct queue_t;
 
         // Example:
-        //    queue_t* queue = create_queue(allocator, 10, sizeof(int));
-        //    int item = 0;
-        //    queue_enqueue(queue, &item);
+        //    queue_t* queue = queue_create(allocator, 10, sizeof(int));
+        //    int itemA = 0;
+        //    int itemB = 1;
+        //    queue_enqueue(queue, &itemA);
+        //    queue_enqueue(queue, &itemB);
+        //
+        //    int item;
         //    queue_dequeue(queue, &item);
-        //    destroy_queue(queue);
+        //    queue_dequeue(queue, &item);
+        //    queue_destroy(queue);
 
-        queue_t* create_queue(alloc_t* allocator, s32 item_count, s32 item_size);
-        void     destroy_queue(alloc_t* allocator, queue_t* queue);
+        queue_t* queue_create(alloc_t* allocator, s32 item_count, s32 item_size);
+        void     queue_destroy(alloc_t* allocator, queue_t* queue);
 
         void queue_enqueue(queue_t* queue, void* item);
         bool queue_dequeue(queue_t* queue, void* item);

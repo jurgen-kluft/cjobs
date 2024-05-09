@@ -5,10 +5,6 @@
 
 #include <atomic>
 #include <cassert>
-#include <cstddef> // offsetof
-#include <limits>
-#include <memory>
-#include <new> // std::hardware_destructive_interference_size
 #include <stdexcept>
 
 namespace ncore
@@ -19,19 +15,25 @@ namespace ncore
 
         struct slot_t
         {
-            std::atomic<int_t> turn;
+            std::atomic<s32> turn;
             // storage ....
 
             void store(void* item, u32 item_size) noexcept
             {
-                byte* storage = (byte*)((byte*)this + sizeof(std::atomic<int_t>));
-                std::memcpy(storage, item, item_size);
+                byte*             storage = (byte*)((byte*)this + sizeof(std::atomic<int_t>));
+                byte const*       src     = (byte const*)item;
+                byte const* const end     = src + item_size;
+                while (src < end)
+                    *storage++ = *src++;
             }
 
             void retrieve(void* item, u32 item_size) noexcept
             {
                 byte const* storage = (byte*)((byte*)this + sizeof(std::atomic<int_t>));
-                std::memcpy(item, storage, item_size);
+                byte*       dst     = (byte*)item;
+                byte* const end     = dst + item_size;
+                while (dst < end)
+                    *dst++ = *storage++;
             }
         };
 
@@ -134,10 +136,10 @@ namespace ncore
             /// The size can be negative when the queue is empty and there is at least one
             /// reader waiting. Since this is a concurrent queue the size is only a best
             /// effort guess until all reader and writer threads have been joined.
-            int_t size() const noexcept
+            s32 size() const noexcept
             {
                 // TODO: How can we deal with wrapped queue on 32bit?
-                return static_cast<int_t>(m_head.load(std::memory_order_relaxed) - m_tail.load(std::memory_order_relaxed));
+                return static_cast<s32>(m_head.load(std::memory_order_relaxed) - m_tail.load(std::memory_order_relaxed));
             }
 
             /// Returns true if the queue is empty.
@@ -145,17 +147,17 @@ namespace ncore
             /// until all reader and writer threads have been joined.
             bool empty() const noexcept { return size() <= 0; }
 
-            constexpr int_t idx(int_t i) const noexcept { return i % m_capacity; }
-            constexpr int_t turn(int_t i) const noexcept { return i / m_capacity; }
+            constexpr s32 idx(s32 i) const noexcept { return i % m_capacity; }
+            constexpr s32 turn(s32 i) const noexcept { return i / m_capacity; }
 
-            const int_t m_item_size;
-            const int_t m_slot_size;
+            const s32   m_item_size;
+            const s32   m_slot_size;
             byte* const m_slots;
-            const int_t m_capacity;
+            const s32   m_capacity; // Note: If capacity is a power of 2, we can use a mask instead of modulo and a shift operation instead of a division
 
             // Align to avoid false sharing between head and tail
-            alignas(cacheline_size) std::atomic<int_t> m_head;
-            alignas(cacheline_size) std::atomic<int_t> m_tail;
+            alignas(cacheline_size) std::atomic<s32> m_head;
+            alignas(cacheline_size) std::atomic<s32> m_tail;
         };
     } // namespace mpmc
 
@@ -165,7 +167,7 @@ namespace ncore
         {
         };
 
-        queue_t* create_queue(alloc_t* allocator, s32 item_count, s32 item_size)
+        queue_t* queue_create(alloc_t* allocator, s32 item_count, s32 item_size)
         {
             s32 const array_size = (item_count + 1) * math::alignUp(item_size + sizeof(mpmc::slot_t), mpmc::cacheline_size);
             void*     mem        = allocator->allocate(array_size + sizeof(mpmc::queue_t), mpmc::cacheline_size);
@@ -176,7 +178,7 @@ namespace ncore
             return (queue_t*)queue;
         }
 
-        void destroy_queue(alloc_t* allocator, queue_t* queue)
+        void queue_destroy(alloc_t* allocator, queue_t* queue)
         {
             mpmc::queue_t* mpmc_queue = (mpmc::queue_t*)queue;
             allocator->deallocate(mpmc_queue);

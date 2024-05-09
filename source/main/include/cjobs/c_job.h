@@ -11,51 +11,40 @@ namespace ncore
 
     namespace njob
     {
-        typedef void* job_handle_t;
         class system_t;
 
         // -----------------------------------------------------------------------------------------------------------------------
-        // Job (Single/Run)
+        // Job
 
-        class ijob
+        class ijob_t
         {
         public:
-            virtual ~ijob() {}
-            virtual void execute() = 0;
-        };
-
-        job_handle_t g_schedule(system_t* system, ijob* job, job_handle_t dependsOn = nullptr);
-        void         g_run(ijob* job);
-
-        // -----------------------------------------------------------------------------------------------------------------------
-        // Job For (Parallel)
-
-        class ijob_for
-        {
-        public:
-            virtual ~ijob_for() {}
+            virtual ~ijob_t() {}
             virtual void execute(s32 index) = 0;
         };
 
-        job_handle_t g_schedule(system_t* system, ijob_for* job, s32 arrayLength, job_handle_t dependsOn = nullptr);
-        job_handle_t g_schedule_parallel(system_t* system, ijob_for* job, s32 arrayLength, s32 innerloopBatchCount, job_handle_t dependsOn = nullptr);
-
-        job_handle_t g_run(system_t* system, ijob_for* job, s32 arrayLength);
+        // Note: As a user you should take care of a job handle, if you do not plan to use it anymore, you should release it.
+        typedef void* job_handle_t; 
+        
+        // -----------------------------------------------------------------------------------------------------------------------
+        void g_run(system_t* system, ijob_t* job, job_handle_t dependsOn = nullptr);
+        void g_run(system_t* system, ijob_t* job, s32 arrayLength, job_handle_t dependsOn = nullptr);
+        void g_run(system_t* system, ijob_t* job, s32 arrayLength, s32 innerloopBatchCount, job_handle_t dependsOn = nullptr);
 
         // -----------------------------------------------------------------------------------------------------------------------
-        // Job Parallel For
+        job_handle_t g_schedule_single(system_t* system, ijob_t* job, job_handle_t dependsOn = nullptr);
+        job_handle_t g_schedule_single(system_t* system, ijob_t* job, s32 arrayLength, job_handle_t dependsOn = nullptr);
+        job_handle_t g_schedule_parallel(system_t* system, ijob_t* job, s32 arrayLength, s32 innerloopBatchCount, job_handle_t dependsOn = nullptr);
 
-        class ijob_parallel_for
-        {
-        public:
-            virtual ~ijob_parallel_for() {}
-            virtual void execute(s32 index) = 0;
-        };
+        // Job handle will be set to nullptr and the job will be released or marked as to be released
+        bool g_releaseHandle(system_t* system, job_handle_t& handle);
 
-        job_handle_t g_schedule(system_t* system, ijob_parallel_for* job, s32 arrayLength, s32 innerloopBatchCount, job_handle_t dependsOn = nullptr);
-        job_handle_t g_run(system_t* system, ijob_parallel_for* job, s32 arrayLength);
+        // Job handle will be set to nullptr when the job is done
+        // Note: Should we help with executing some work ?
+        void g_waitUntilDone(system_t* system, job_handle_t& handle);
+        void g_waitUntilDoneWithTimeOut(system_t* system, job_handle_t& handle, u32 milliseconds);
 
-    } // namespace njobs
+    } // namespace njob
 
 } // namespace ncore
 

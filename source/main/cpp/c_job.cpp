@@ -1,7 +1,17 @@
 #include "ccore/c_target.h"
 #include "cbase/c_allocator.h"
+#include "cbase/c_integer.h"
+
 #include "cjobs/c_queue.h"
 #include "cjobs/c_job.h"
+
+#include <atomic>
+
+#ifdef TARGET_MAC
+#    include <mach/mach.h>
+#    include <mach/task.h>
+#    include <mach/semaphore.h>
+#endif
 
 namespace ncore
 {
@@ -9,14 +19,6 @@ namespace ncore
     {
         // Use std::thread
         // https://en.cppreference.com/w/cpp/thread
-
-        struct job_ranges_t
-        {
-            s32  BatchSize;
-            s32  NumJobs;
-            s32  TotalIterationCount;
-            s32* StartEndIndex;
-        };
 
         enum EScheduleMode
         {
@@ -31,144 +33,172 @@ namespace ncore
             ParallelFor = 1
         };
 
-        struct job_schedule_parameters_t
+        struct job_done_t
         {
-            job_handle_t m_dependency;
-            s32          m_schedule_mode;
-            void*        m_job_data;
-
-            job_schedule_parameters_t(void* job_data, job_handle_t dependency, EScheduleMode scheduleMode)
+            std::atomic<s32> m_done_count;
+            s32              m_total_count;
+            semaphore_t      m_done;
+            inline void      init(s32 count)
             {
-                m_dependency    = dependency;
-                m_job_data      = job_data;
-                m_schedule_mode = (s32)scheduleMode;
+                semaphore_create(mach_task_self(), &m_done, SYNC_POLICY_FIFO, count);
+                m_done_count.store(0);
+            }
+            inline void done()
+            {
+                m_done_count.fetch_add(1);
+                semaphore_signal(m_done);
+            }
+            inline void exit() { semaphore_destroy(mach_task_self(), m_done); }
+            inline bool is_done() const { return m_done_count.load() == m_total_count; }
+            inline void signal() { semaphore_signal(m_done); }
+            inline void wait() { semaphore_wait(m_done); }
+            bool        try_wait(u32 milliseconds)
+            {
+                mach_timespec_t ts;
+                ts.tv_sec  = milliseconds / 1000;
+                ts.tv_nsec = (milliseconds % 1000) * 1000000;
+                return semaphore_timedwait(m_done, ts) == KERN_SUCCESS;
             }
         };
 
-        struct queue_t
+        struct job_t
         {
-            ijob* dequeue() { return nullptr; }
+            ijob_t*          m_job;
+            s32              m_array_length;
+            s32              m_innerloop_batch_count;
+            job_handle_t*    m_dependency;
+            job_done_t       m_done;
+            std::atomic<s32> m_ref_count; // Number of 
         };
 
-        struct semaphore_t
+        struct work_t
         {
-            void wait(u32 ms);
+            job_t* m_job;
+            s32    m_start;
+            s32    m_end;
         };
+
+        struct context_t
+        {
+            u32      m_max_jobs;   // Maximum number of jobs that can be active
+            job_t*   m_jobs;       // Array of jobs, job_t[m_max_jobs]
+            queue_t* m_jobs_queue; // Any worker can take a job from this queue and schedule it, queue<job_t*>
+
+            u32      m_max_work_items;  // Maximum number of work items that can be active
+            work_t*  m_work_items;      // Array of work items, work_t[m_max_work_items]
+            queue_t* m_work_item_queue; // Any worker can take a work item from this queue and schedule it in 'm_scheduled_work', queue<work_t*>
+
+            u32       m_max_workers;      // Number of worker threads
+            queue_t*  m_inactive_workers; // Worker threads that have no work, queue<s32>
+            queue_t** m_scheduled_work;   // Worker thread work queues, queue_t<work_t*>*[]
+            // semaphore_t* m_semaphores; // Semaphore to signal worker threads, semaphore_t[m_max_workers]
+        };
+
+        // A job will be scheduled as one or many work items depending on how the user wants to schedule it
+        static job_handle_t s_schedule_single(context_t* ctx, ijob_t* job)
+        {
+            s32 const thread_index = 0; // Which worker thread should we schedule the job on?
+
+            job_t* job_item = nullptr;
+            queue_dequeue(ctx->m_jobs_queue, &job_item);
+            job_item->m_job                   = job;
+            job_item->m_type                  = EJobType::Single;
+            job_item->m_array_length          = 1;
+            job_item->m_innerloop_batch_count = 1;
+            job_item->m_dependency            = nullptr;
+            job_item->m_done.init(1);
+
+            // Schedule job as one work item
+            work_t* work = nullptr;
+            queue_dequeue(ctx->m_work_item_queue, &work);
+            work->m_job   = job_item;
+            work->m_start = 0;
+            work->m_end   = 1;
+            queue_enqueue(ctx->m_scheduled_work[thread_index], &work);
+
+            return (job_handle_t)job_item;
+        }
+
+        static job_handle_t s_schedule_for(context_t* ctx, ijob_t* job, s32 array_length)
+        {
+            s32 const thread_index = 0; // Which worker thread should we schedule the job on?
+
+            job_t* job_item = nullptr;
+            queue_dequeue(ctx->m_jobs_queue, &job_item);
+            job_item->m_job                   = job;
+            job_item->m_type                  = EJobType::ParallelFor;
+            job_item->m_array_length          = array_length;
+            job_item->m_innerloop_batch_count = array_length;
+            job_item->m_dependency            = nullptr;
+            job_item->m_done.init(1);
+
+            // Schedule job as one work item
+            work_t* work = nullptr;
+            queue_dequeue(ctx->m_work_item_queue, &work);
+            work->m_job   = job_item;
+            work->m_start = 0;
+            work->m_end   = array_length;
+            queue_enqueue(ctx->m_scheduled_work[thread_index], &work);
+
+            return (job_handle_t)job_item;
+        }
+
+        static job_handle_t s_schedule_parallel(context_t* ctx, ijob_t* job, s32 array_length, s32 innerloop_batch_count)
+        {
+            s32 const thread_index = 0; // Which worker thread should we schedule the job on?
+
+            job_t* job_item = nullptr;
+            queue_dequeue(ctx->m_jobs_queue, &job_item);
+            job_item->m_job                   = job;
+            job_item->m_type                  = EJobType::ParallelFor;
+            job_item->m_array_length          = array_length;
+            job_item->m_innerloop_batch_count = innerloop_batch_count;
+            job_item->m_dependency            = nullptr;
+
+            // Schedule job as N work items
+            s32 const N = (array_length + (innerloop_batch_count - 1)) / innerloop_batch_count;
+            job_item->m_done.init(N);
+
+            s32 start = 0;
+            while (start < array_length)
+            {
+                s32 const end = math::min(start + innerloop_batch_count, array_length);
+
+                work_t* work = nullptr;
+                queue_dequeue(ctx->m_work_item_queue, &work);
+                work->m_job   = job_item;
+                work->m_start = start;
+                work->m_end   = end;
+                queue_enqueue(ctx->m_scheduled_work[thread_index], &work);
+
+                start = end;
+            }
+
+            return (job_handle_t)job_item;
+        }
 
         struct worker_t
         {
-            bool          isQuitting;
-            s32           m_workerId;
-            queue_t*      m_worker_queue;
-            semaphore_t** m_semaphores;
-
-            void  execute();
-            ijob* steal_from_other_queues();
-            void  wake_workers();
-            void  execute_job(ijob* job);
-            bool  should_sleep();
+            context_t* m_ctx;
+            s32        m_index; // Worker index
         };
 
-        void worker_t::execute()
-        {
-            while (!isQuitting)
-            {
-                // Take a job from our worker thread’s local queue
-                ijob* pJob = m_worker_queue[m_workerId].dequeue();
+        // Example of granularity being too fine:
+        //    array_length = 10000, innerloop_batch_count = 10, this means we will schedule 1000 work items.
+        //    If we have 4 worker threads, then each worker thread will have 250 work items to process. Also
+        //    the amount of stealing will be high which will lead to a lot of contention.
+        // Correction to the example above:
+        //    array_length = 10000, innerloop_batch_count = 100, this means we will schedule 100 work items.
+        //    If we have 4 worker threads, then each worker thread will have 25 work items to process. Now
+        //    work items take longer to process and the amount of stealing will be lower which will lead to
+        //    less contention.
 
-                // If our queue is empty try to steal work from someone
-                // else's queue to help them out.
-                if (pJob == nullptr)
-                {
-                    pJob = steal_from_other_queues();
-                }
+        // How to handle dependencies and wait ?
 
-                if (pJob)
-                {
-                    // If we found work, there may be more conditionally
-                    // wake up other workers as necessary
-                    wake_workers();
-                    execute_job(pJob);
-                }
-                // Conditionally go to sleep (perhaps we were told there is a
-                // parallel job we can help with)
-                else if (should_sleep())
-                {
-                    // Put the thread to sleep until more jobs are scheduled
-                    m_semaphores[m_workerId]->wait(1);
-                }
-            }
-        }
+        // What about sync points ?
 
-        /// <summary>
-        /// The maximum number of job threads that can ever be created by the job system.
-        /// </summary>
-        /// <remarks>This maximum is the theoretical max the job system supports. In practice, the maximum number of job worker threads
-        /// created by the job system will be lower as the job system will prevent creating more job worker threads than logical
-        /// CPU cores on the target hardware. This value is useful for compile time constants, however when used for creating buffers
-        /// it may be larger than required. For allocating a buffer that can be subdivided evenly between job worker threads, prefer
-        /// the runtime constant returned by <seealso cref="JobsUtility.ThreadIndexCount"/>.
-        /// </remarks>
-        const int  CacheLineSize         = 64;
-        const int  MaxJobThreadCount     = 128;
-        static int JobWorkerMaximumCount = 128;
-
-        class jobs_utility_t
-        {
-            static void GetJobRange(job_ranges_t& ranges, s32 jobIndex, s32& outBeginIndex, s32& outEndIndex)
-            {
-                s32 const* startEndIndices = (s32 const*)ranges.StartEndIndex;
-                outBeginIndex              = startEndIndices[jobIndex * 2];
-                outEndIndex                = startEndIndices[jobIndex * 2 + 1];
-            }
-
-            static int  GetJobQueueWorkerThreadCount();
-            static void SetJobQueueMaximumActiveThreadCount(int count);
-            static void ResetJobWorkerCount();
-            static int  GetJobWorkerCount() { return GetJobQueueWorkerThreadCount(); }
-            static void SetJobWorkerCount(int value)
-            {
-                if ((value < 0) || (value > JobWorkerMaximumCount))
-                {
-                    ASSERT(false);
-                    return;
-                }
-                SetJobQueueMaximumActiveThreadCount(value);
-            }
-
-            // <summary>
-            // Returns the index for the current thread when executing a job, otherwise 0.
-            // When multiple threads are executing jobs, no two threads will have the same index.
-            // Range is [0, ThreadIndexCount].
-            // </summary>
-            static int ThreadIndex() { return 0; }
-
-            /// <summary>
-            /// Returns the maximum number of job workers that can work on a job at the same time.
-            /// </summary>
-            /// <remarks>
-            /// The job system will create a number of job worker threads that will be no greater than the number of logical CPU cores for the platform.
-            /// However, since arbitrary threads can execute jobs via work stealing we allocate extra workers which act as temporary job worker threads.
-            // JobsUtility.ThreadIndexCount reflects the maximum number of job worker threads plus temporary workers the job system will ever use.
-            // As such, this value is useful for allocating buffers which should be subdivided evenly between job workers since ThreadIndex will never
-            // return a value greater than ThreadIndexCount.
-            /// </remarks>
-            static int ThreadIndexCount() { return GetJobWorkerCount(); }
-        };
-
-        // -----------------------------------------------------------------------------------------------------------------------
-        // Job System
-
-        class system_t
-        {
-        public:
-            void setup(s32 num_workers = 1);
-            void teardown();
-
-            u32        m_num_workers;
-            worker_t** m_workers;
-            queue_t**  m_queues;
-        };
+        // Job handles can point to a struct that contains the job info, 'atomic<bool> finished' and its dependencies
+        // WaitForAll(job_handle_t* jobs, int count) means that we look at the job handle and check if the job is done
 
     } // namespace njob
 } // namespace ncore
