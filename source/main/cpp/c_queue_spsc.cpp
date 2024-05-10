@@ -39,7 +39,6 @@ namespace ncore
 
             void push(void* item)
             {
-                static_assert(std::is_constructible<T, Args&&...>::value, "T must be constructible with Args&&...");
                 auto const writeIdx     = m_writeIdx.load(std::memory_order_relaxed);
                 auto       nextWriteIdx = writeIdx + 1;
                 if (nextWriteIdx == m_capacity)
@@ -50,7 +49,14 @@ namespace ncore
                 {
                     m_readIdxCache = m_readIdx.load(std::memory_order_acquire);
                 }
-                new (&m_slots[writeIdx + kPadding]) T(std::forward<Args>(args)...);
+
+                //new (&m_slots[writeIdx + kPadding]) T(std::forward<Args>(args)...);
+                byte*             dst = m_slots + (writeIdx * m_slot_size);
+                byte*             src  = (byte*)item;
+                byte const* const end  = dst + m_item_size;
+                while (dst < end)
+                    *dst++ = *src++;
+
                 m_writeIdx.store(nextWriteIdx, std::memory_order_release);
             }
 
@@ -70,12 +76,18 @@ namespace ncore
                         return false;
                     }
                 }
-                new (&m_slots[writeIdx + kPadding]) T(std::forward<Args>(args)...);
+                //new (&m_slots[writeIdx + kPadding]) T(std::forward<Args>(args)...);
+                byte*             dst = m_slots + (writeIdx * m_slot_size);
+                byte*             src  = (byte*)item;
+                byte const* const end  = dst + m_item_size;
+                while (dst < end)
+                    *dst++ = *src++;
+
                 m_writeIdx.store(nextWriteIdx, std::memory_order_release);
                 return true;
             }
 
-            bool pop(void* item) noexcept
+            bool try_pop(void* item) noexcept
             {
                 auto const readIdx = m_readIdx.load(std::memory_order_relaxed);
                 if (readIdx == m_writeIdxCache)
@@ -142,7 +154,7 @@ namespace ncore
 
     spsc_queue_t* spsc_queue_create(alloc_t* allocator, s32 item_count, s32 item_size)
     {
-        s32 const array_size = (item_count + 1) * math::alignUp(item_size + sizeof(spsc::slot_t), spsc::cacheline_size);
+        s32 const array_size = (item_count + 1) * math::alignUp(item_size, spsc::cacheline_size);
         void*     mem        = allocator->allocate(array_size + sizeof(spsc::queue_t), spsc::cacheline_size);
         if (mem == nullptr)
             return nullptr;
