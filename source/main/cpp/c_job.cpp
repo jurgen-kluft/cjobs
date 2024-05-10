@@ -167,10 +167,10 @@ namespace ncore
 
             u32            m_max_jobs;        // Maximum number of jobs that can be created by this worker
             job_t*         m_jobs;            // Array of jobs, job_t[m_max_jobs]
+            local_queue_t* m_jobs_free_queue; // This worker can take a new job from this queue and initialize it
             local_queue_t* m_jobs_new_queue;  // Queue of jobs that need to be processed
-            mpsc_queue_t*  m_jobs_free_queue; // This worker can take a job from this queue and schedule it
             mpsc_queue_t*  m_jobs_done_queue; // These are jobs that are 'done', can be pushed here from any worker thread
-            spmc_queue_t* m_scheduled_work;  // Worker thread work queue
+            spmc_queue_t*  m_scheduled_work;  // Worker thread work queue
 
             u32   m_max_work_items; // Maximum number of work items that can be active
             byte* m_work_item_mem;  // Large enough memory to hold work items for any created job by this worker
@@ -179,7 +179,7 @@ namespace ncore
         struct main_context_t
         {
             u32               m_max_workers;      // Number of worker threads
-            mpmc_queue_t*     m_inactive_workers; // Worker threads that have no work, queue<s32>
+            mpmc_queue_t<s32> m_inactive_workers; // Worker threads that have no work, queue<s32>
             worker_context_t* m_worker_contexts;  // Worker thread contexts, worker_context_t[m_max_workers]
         };
 

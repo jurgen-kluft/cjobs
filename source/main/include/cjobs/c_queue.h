@@ -27,6 +27,21 @@ namespace ncore
     bool          queue_enqueue(mpmc_queue_t* queue, void* item);
     bool          queue_dequeue(mpmc_queue_t* queue, void* item);
 
+    // template <typename T> class mpmc_queue_t
+    // {
+    //     void* m_queue;
+    // public:
+    //     mpmc_queue_t()
+    //         : m_queue(nullptr)
+    //     {
+    //     }
+
+    //     void setup(alloc_t* allocator, s32 item_count) { m_queue = mpmc_queue_create(allocator, item_count, sizeof(T)); }
+    //     void teardown(alloc_t* allocator) { queue_destroy(allocator, m_queue); }
+    //     bool enqueue(T const& item) { return queue_enqueue(m_queue, &item); }
+    //     bool dequeue(T& item) { return queue_dequeue(m_queue, &item); }
+    // };
+
     struct spsc_queue_t;
     spsc_queue_t* spsc_queue_create(alloc_t* allocator, s32 item_count, s32 item_size);
     void          queue_destroy(alloc_t* allocator, spsc_queue_t* queue);
