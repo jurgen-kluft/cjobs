@@ -145,7 +145,8 @@ namespace ncore
             /// Returns true if the queue is empty.
             /// Since this is a concurrent queue this is only a best effort guess
             /// until all reader and writer threads have been joined.
-            bool empty() const noexcept { return size() <= 0; }
+            bool       empty() const noexcept { return size() <= 0; }
+            inline s32 capacity() const noexcept { return m_capacity; }
 
             constexpr s32 idx(s32 i) const noexcept { return i % m_capacity; }
             constexpr s32 turn(s32 i) const noexcept { return i / m_capacity; }
@@ -182,10 +183,10 @@ namespace ncore
         allocator->deallocate(mpmc_queue);
     }
 
-    void mpmc_queue_enqueue(mpmc_queue_t* queue, void* item)
+    bool mpmc_queue_enqueue(mpmc_queue_t* queue, void* item)
     {
         mpmc::queue_t* mpmc_queue = (mpmc::queue_t*)queue;
-        mpmc_queue->push(item);
+        return mpmc_queue->try_push(item);
     }
 
     bool mpmc_queue_dequeue(mpmc_queue_t* queue, void* item)
