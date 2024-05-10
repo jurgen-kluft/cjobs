@@ -159,19 +159,19 @@ namespace ncore
         return (spsc_queue_t*)queue;
     }
 
-    void spsc_queue_destroy(alloc_t* allocator, spsc_queue_t* queue)
+    void queue_destroy(alloc_t* allocator, spsc_queue_t* queue)
     {
         spsc::queue_t* spsc_queue = (spsc::queue_t*)queue;
         allocator->deallocate(spsc_queue);
     }
 
-    bool spsc_queue_enqueue(spsc_queue_t* queue, void* item)
+    bool queue_enqueue(spsc_queue_t* queue, void* item)
     {
         spsc::queue_t* spsc_queue = (spsc::queue_t*)queue;
         return spsc_queue->try_push(item);
     }
 
-    bool spsc_queue_dequeue(spsc_queue_t* queue, void* item)
+    bool queue_dequeue(spsc_queue_t* queue, void* item)
     {
         spsc::queue_t* spsc_queue = (spsc::queue_t*)queue;
         return spsc_queue->try_pop(item);

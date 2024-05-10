@@ -7,6 +7,10 @@
 
 #include <atomic>
 
+#ifdef TARGET_PC
+#    include <windows.h>
+#endif
+
 #ifdef TARGET_MAC
 #    include <mach/mach.h>
 #    include <mach/task.h>
@@ -33,6 +37,7 @@ namespace ncore
             ParallelFor = 1
         };
 
+#ifdef TARGET_MAC
         struct job_done_t
         {
             std::atomic<s32> m_done_count;
@@ -61,6 +66,63 @@ namespace ncore
                 return semaphore_timedwait(m_done, ts) == KERN_SUCCESS;
             }
         };
+#elif defined(TARGET_PC)
+        struct job_done_t
+        {
+            std::atomic<s32> m_done_count;
+            s32              m_total_count;
+            void*            m_done;
+            inline void      init(s32 count)
+            {
+                // semaphore_create(mach_task_self(), &m_done, SYNC_POLICY_FIFO, count);
+                m_done = CreateSemaphoreW(nullptr, 0, count, nullptr);
+                m_done_count.store(0);
+            }
+            inline bool done()
+            {
+                s32 const done = m_done_count.fetch_add(1);
+                // semaphore_signal(m_done);
+                signal();
+                return done == m_total_count - 1;
+            }
+            inline void exit()
+            {
+                // semaphore_destroy(mach_task_self(), m_done);
+                CloseHandle(m_done);
+            }
+            inline bool is_done() const { return m_done_count.load() == m_total_count; }
+            inline void signal()
+            {
+                // semaphore_signal(m_done);
+                if (!ReleaseSemaphore(m_done, 1, nullptr))
+                {
+                    // cannot signal semaphore
+                }
+            }
+            inline void wait()
+            {
+                // semaphore_wait(m_done);
+                switch (WaitForSingleObject(m_done, INFINITE))
+                {
+                    case WAIT_OBJECT_0: return;
+                    default:
+                        // wait for semaphore failed
+                        break;
+                }
+            }
+            bool try_wait(u32 milliseconds)
+            {
+                switch (WaitForSingleObject(m_done, milliseconds))
+                {
+                    case WAIT_OBJECT_0: return true;
+                    default:
+                        // wait for semaphore failed
+                        break;
+                }
+                return false;
+            }
+        };
+#endif
 
         struct job_t
         {
@@ -103,12 +165,12 @@ namespace ncore
             s32             m_index;
             // semaphore_t m_semaphore; // Semaphore to signal this worker thread
 
-            u32      m_max_jobs;        // Maximum number of jobs that can be created by this worker
-            job_t*   m_jobs;            // Array of jobs, job_t[m_max_jobs]
-            queue_t* m_jobs_new_queue;  // Queue of jobs that need to be processed
-            queue_t* m_jobs_free_queue; // This worker can take a job from this queue and schedule it
-            queue_t* m_jobs_done_queue; // These are jobs that are 'done', can be pushed here from any worker thread
-            queue_t* m_scheduled_work;  // Worker thread work queue
+            u32            m_max_jobs;        // Maximum number of jobs that can be created by this worker
+            job_t*         m_jobs;            // Array of jobs, job_t[m_max_jobs]
+            local_queue_t* m_jobs_new_queue;  // Queue of jobs that need to be processed
+            mpsc_queue_t*  m_jobs_free_queue; // This worker can take a job from this queue and schedule it
+            mpsc_queue_t*  m_jobs_done_queue; // These are jobs that are 'done', can be pushed here from any worker thread
+            spmc_queue_t* m_scheduled_work;  // Worker thread work queue
 
             u32   m_max_work_items; // Maximum number of work items that can be active
             byte* m_work_item_mem;  // Large enough memory to hold work items for any created job by this worker
@@ -117,7 +179,7 @@ namespace ncore
         struct main_context_t
         {
             u32               m_max_workers;      // Number of worker threads
-            queue_t*          m_inactive_workers; // Worker threads that have no work, queue<s32>
+            mpmc_queue_t*     m_inactive_workers; // Worker threads that have no work, queue<s32>
             worker_context_t* m_worker_contexts;  // Worker thread contexts, worker_context_t[m_max_workers]
         };
 

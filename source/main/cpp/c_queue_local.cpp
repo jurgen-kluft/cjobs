@@ -117,19 +117,19 @@ namespace ncore
         return (local_queue_t*)queue;
     }
 
-    void local_queue_destroy(alloc_t* allocator, local_queue_t* queue)
+    void queue_destroy(alloc_t* allocator, local_queue_t* queue)
     {
         local::queue_t* local_queue = (local::queue_t*)queue;
         allocator->deallocate(local_queue);
     }
 
-    bool local_queue_enqueue(local_queue_t* queue, void* item)
+    bool queue_enqueue(local_queue_t* queue, void* item)
     {
         local::queue_t* local_queue = (local::queue_t*)queue;
         local_queue->try_push(item);
     }
 
-    bool local_queue_dequeue(local_queue_t* queue, void* item)
+    bool queue_dequeue(local_queue_t* queue, void* item)
     {
         local::queue_t* local_queue = (local::queue_t*)queue;
         return local_queue->try_pop(item);
