@@ -69,8 +69,7 @@ namespace ncore
             s32           m_innerloop_batch_count;
             job_handle_t* m_dependency;
             job_done_t    m_done;
-            s16           m_work_item_start; // The range of work items that we allocated for this job
-            s16           m_work_item_end;
+            s16           m_worker_index; // Worker thread that created this job
         };
 
         struct work_t
@@ -84,28 +83,45 @@ namespace ncore
         // items can be freed. The obvious thing to do is to have a mpmc queue with work items that
         // can be used to alloc and free. However we could also just have a big chunk of memory that
         // we use as a circular buffer and we just keep track of the start and end of the buffer.
+
         // Note: There are moments in the execution that can be used to garbage collect, hmmmmm.
         //       Maybe we can have the main thread do the garbage collection? But how do we know
         //       which ranges of work items are done? Should we have a separate queue for jobs that
         //       are done but need to be garbage collected?
 
-        struct context_t
+        // Note: If we can make anything more SPSC or even MPSC then we can avoid a lot of contention.
+        //       For example, one specific worker thread will create a job, preferably with memory that
+        //       is local to that worker thread. When any of the workers detect the end of the job it
+        //       will push the job on the 'free' queue of the worker thread that created the job. This
+        //       way we can avoid contention on the 'free' queue of the main thread.
+        //       This does increase the overall memory footprint.
+
+        struct main_context_t;
+
+        struct worker_context_t
         {
-            u32      m_max_jobs;   // Maximum number of jobs that can be active
-            job_t*   m_jobs;       // Array of jobs, job_t[m_max_jobs]
-            queue_t* m_jobs_queue; // Any worker can take a job from this queue and schedule it, queue<job_t*>
+            main_context_t* m_ctx;
+            s32             m_index;
+            // semaphore_t m_semaphore; // Semaphore to signal this worker thread
+
+            u32      m_max_jobs;       // Maximum number of jobs that can be created by this worker
+            job_t*   m_jobs;           // Array of jobs, job_t[m_max_jobs]
+            queue_t* m_jobs_queue;     // This worker can take a job from this queue and schedule it, queue<job_t*>
+            queue_t* m_scheduled_work; // Worker thread work queue
 
             u32   m_max_work_items; // Maximum number of work items that can be active
-            byte* m_work_item_mem;  // Large enough memory to hold all work items of one execution frame
+            byte* m_work_item_mem;  // Large enough memory to hold work items for any created job by this worker
+        };
 
-            u32       m_max_workers;      // Number of worker threads
-            queue_t*  m_inactive_workers; // Worker threads that have no work, queue<s32>
-            queue_t** m_scheduled_work;   // Worker thread work queues, queue_t<work_t*>*[]
-            // semaphore_t* m_semaphores; // Semaphore to signal worker threads, semaphore_t[m_max_workers]
+        struct main_context_t
+        {
+            u32               m_max_workers;      // Number of worker threads
+            queue_t*          m_inactive_workers; // Worker threads that have no work, queue<s32>
+            worker_context_t* m_worker_contexts;  // Worker thread contexts, worker_context_t[m_max_workers]
         };
 
         // A job will be scheduled as one or many work items depending on how the user wants to schedule it
-        static job_handle_t s_schedule_single(context_t* ctx, ijob_t* job)
+        static job_handle_t s_schedule_single(main_context_t* ctx, ijob_t* job)
         {
             s32 const thread_index = 0; // Which worker thread should we schedule the job on?
 
@@ -128,7 +144,7 @@ namespace ncore
             return (job_handle_t)job_item;
         }
 
-        static job_handle_t s_schedule_for(context_t* ctx, ijob_t* job, s32 array_length)
+        static job_handle_t s_schedule_for(main_context_t* ctx, ijob_t* job, s32 array_length)
         {
             s32 const thread_index = 0; // Which worker thread should we schedule the job on?
 
@@ -151,7 +167,7 @@ namespace ncore
             return (job_handle_t)job_item;
         }
 
-        static job_handle_t s_schedule_parallel(context_t* ctx, ijob_t* job, s32 array_length, s32 innerloop_batch_count)
+        static job_handle_t s_schedule_parallel(main_context_t* ctx, ijob_t* job, s32 array_length, s32 innerloop_batch_count)
         {
             s32 const thread_index = 0; // Which worker thread should we schedule the job on?
 
@@ -186,14 +202,14 @@ namespace ncore
 
         struct worker_t
         {
-            context_t* m_ctx;
-            s32        m_index; // Worker index
+            main_context_t* m_ctx;
+            s32             m_index; // Worker index
         };
 
         static void s_worker_thread(worker_t* worker)
         {
-            context_t* ctx   = worker->m_ctx;
-            s32 const  index = worker->m_index;
+            main_context_t* ctx   = worker->m_ctx;
+            s32 const       index = worker->m_index;
 
             while (true)
             {
