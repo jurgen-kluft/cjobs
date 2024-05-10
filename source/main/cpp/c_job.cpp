@@ -64,12 +64,13 @@ namespace ncore
 
         struct job_t
         {
-            ijob_t*          m_job;
-            s32              m_array_length;
-            s32              m_innerloop_batch_count;
-            job_handle_t*    m_dependency;
-            job_done_t       m_done;
-            std::atomic<s32> m_ref_count; // Number of
+            ijob_t*       m_job;
+            s32           m_array_length;
+            s32           m_innerloop_batch_count;
+            job_handle_t* m_dependency;
+            job_done_t    m_done;
+            s16           m_work_item_start; // The range of work items that we allocated for this job
+            s16           m_work_item_end;
         };
 
         struct work_t
@@ -79,16 +80,23 @@ namespace ncore
             s32    m_end;
         };
 
+        // For work items, the thing is they are very temporary, once a job is done all of the work
+        // items can be freed. The obvious thing to do is to have a mpmc queue with work items that
+        // can be used to alloc and free. However we could also just have a big chunk of memory that
+        // we use as a circular buffer and we just keep track of the start and end of the buffer.
+        // Note: There are moments in the execution that can be used to garbage collect, hmmmmm.
+        //       Maybe we can have the main thread do the garbage collection? But how do we know
+        //       which ranges of work items are done? Should we have a separate queue for jobs that
+        //       are done but need to be garbage collected?
+
         struct context_t
         {
             u32      m_max_jobs;   // Maximum number of jobs that can be active
             job_t*   m_jobs;       // Array of jobs, job_t[m_max_jobs]
             queue_t* m_jobs_queue; // Any worker can take a job from this queue and schedule it, queue<job_t*>
 
-            u32     m_max_work_items; // Maximum number of work items that can be active
-            work_t* m_work_items;     // Array of work items, work_t[m_max_work_items]
-            alignas(64) std::atomic<s32> m_work_item_head;
-            alignas(64) std::atomic<s32> m_work_item_tail;
+            u32   m_max_work_items; // Maximum number of work items that can be active
+            byte* m_work_item_mem;  // Large enough memory to hold all work items of one execution frame
 
             u32       m_max_workers;      // Number of worker threads
             queue_t*  m_inactive_workers; // Worker threads that have no work, queue<s32>
