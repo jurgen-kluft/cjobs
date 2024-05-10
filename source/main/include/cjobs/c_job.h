@@ -20,7 +20,7 @@ namespace ncore
         {
         public:
             virtual ~ijob_t() {}
-            virtual void execute(s32 index) = 0;
+            virtual void execute(s32 from, s32 to) = 0;
         };
 
         // Note: As a user you should take care of a job handle, if you do not plan to use it anymore, you should release it.

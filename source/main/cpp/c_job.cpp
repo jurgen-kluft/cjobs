@@ -66,7 +66,7 @@ namespace ncore
         {
             ijob_t*       m_job;
             s32           m_array_length;
-            s32           m_innerloop_batch_count;
+            s32           m_inner_count;
             job_handle_t* m_dependency;
             job_done_t    m_done;
             s16           m_worker_index; // Worker thread that created this job
@@ -81,15 +81,14 @@ namespace ncore
 
         // For work items, the thing is they are very temporary, once a job is done all of the work
         // items can be freed. The obvious thing to do is to have a mpmc queue with work items that
-        // can be used to alloc and free. However we could also just have a big chunk of memory that
-        // we use as a circular buffer and we just keep track of the start and end of the buffer.
+        // can be used to alloc and free. However this will cause obvious contention on the queue.
 
         // Note: There are moments in the execution that can be used to garbage collect, hmmmmm.
         //       Maybe we can have the main thread do the garbage collection? But how do we know
         //       which ranges of work items are done? Should we have a separate queue for jobs that
         //       are done but need to be garbage collected?
 
-        // Note: If we can make anything more SPSC or even MPSC then we can avoid a lot of contention.
+        // Note: If we can make more use of SPSC or even MPSC then we can avoid a lot of contention.
         //       For example, one specific worker thread will create a job, preferably with memory that
         //       is local to that worker thread. When any of the workers detect the end of the job it
         //       will push the job on the 'free' queue of the worker thread that created the job. This
@@ -104,10 +103,12 @@ namespace ncore
             s32             m_index;
             // semaphore_t m_semaphore; // Semaphore to signal this worker thread
 
-            u32      m_max_jobs;       // Maximum number of jobs that can be created by this worker
-            job_t*   m_jobs;           // Array of jobs, job_t[m_max_jobs]
-            queue_t* m_jobs_queue;     // This worker can take a job from this queue and schedule it, queue<job_t*>
-            queue_t* m_scheduled_work; // Worker thread work queue
+            u32      m_max_jobs;        // Maximum number of jobs that can be created by this worker
+            job_t*   m_jobs;            // Array of jobs, job_t[m_max_jobs]
+            queue_t* m_jobs_new_queue;  // Queue of jobs that need to be processed
+            queue_t* m_jobs_free_queue; // This worker can take a job from this queue and schedule it
+            queue_t* m_jobs_done_queue; // These are jobs that are 'done', can be pushed here from any worker thread
+            queue_t* m_scheduled_work;  // Worker thread work queue
 
             u32   m_max_work_items; // Maximum number of work items that can be active
             byte* m_work_item_mem;  // Large enough memory to hold work items for any created job by this worker
@@ -127,10 +128,10 @@ namespace ncore
 
             job_t* job_item = nullptr;
             queue_dequeue(ctx->m_jobs_queue, &job_item);
-            job_item->m_job                   = job;
-            job_item->m_array_length          = 1;
-            job_item->m_innerloop_batch_count = 1;
-            job_item->m_dependency            = nullptr;
+            job_item->m_job          = job;
+            job_item->m_array_length = 1;
+            job_item->m_inner_count  = 1;
+            job_item->m_dependency   = nullptr;
             job_item->m_done.init(1);
 
             // Schedule job as one work item
@@ -150,10 +151,10 @@ namespace ncore
 
             job_t* job_item = nullptr;
             queue_dequeue(ctx->m_jobs_queue, &job_item);
-            job_item->m_job                   = job;
-            job_item->m_array_length          = array_length;
-            job_item->m_innerloop_batch_count = array_length;
-            job_item->m_dependency            = nullptr;
+            job_item->m_job          = job;
+            job_item->m_array_length = array_length;
+            job_item->m_inner_count  = array_length;
+            job_item->m_dependency   = nullptr;
             job_item->m_done.init(1);
 
             // Schedule job as one work item
@@ -173,10 +174,10 @@ namespace ncore
 
             job_t* job_item = nullptr;
             queue_dequeue(ctx->m_jobs_queue, &job_item);
-            job_item->m_job                   = job;
-            job_item->m_array_length          = array_length;
-            job_item->m_innerloop_batch_count = innerloop_batch_count;
-            job_item->m_dependency            = nullptr;
+            job_item->m_job          = job;
+            job_item->m_array_length = array_length;
+            job_item->m_inner_count  = innerloop_batch_count;
+            job_item->m_dependency   = nullptr;
 
             // Schedule job as N work items
             s32 const N = (array_length + (innerloop_batch_count - 1)) / innerloop_batch_count;
@@ -202,20 +203,21 @@ namespace ncore
 
         struct worker_t
         {
-            main_context_t* m_ctx;
-            s32             m_index; // Worker index
+            main_context_t*   m_main_ctx;
+            worker_context_t* m_worker_ctx;
+            s32               m_index;
         };
 
         static void s_worker_thread(worker_t* worker)
         {
-            main_context_t* ctx   = worker->m_ctx;
+            main_context_t* ctx   = worker->m_main_ctx;
             s32 const       index = worker->m_index;
 
             while (true)
             {
                 // Wait for work
                 work_t* work = nullptr;
-                queue_dequeue(ctx->m_scheduled_work[index], &work);
+                queue_dequeue(worker->m_worker_ctx->m_scheduled_work, &work);
 
                 if (work == nullptr)
                 {
@@ -224,30 +226,29 @@ namespace ncore
                     {
                         if (i == index)
                             continue;
-
-                        if (queue_dequeue(ctx->m_scheduled_work[i], &work))
+                        worker_context_t* worker_ctx = &ctx->m_worker_contexts[i];
+                        if (queue_dequeue(worker_ctx->m_scheduled_work, &work))
                             break;
                     }
                 }
 
                 if (work == nullptr)
                 {
-                    // No work, enqueue worker to inactive workers
-                    queue_enqueue(ctx->m_inactive_workers, &worker->m_index);
-                    // Wait for work, semaphore_wait(ctx->m_semaphores[index]);
+                    // No work, find a job
                     continue;
                 }
 
-                // Execute work
-                for (s32 i = work->m_start; i < work->m_end; ++i)
-                {
-                    work->m_job->m_job->execute(i);
-                }
+                // The job that work is part of
+                job_t* job = work->m_job;
 
-                if (work->m_job->m_done.done())
+                // Execute work
+                job->m_job->execute(work->m_start, work->m_end);
+
+                if (job->m_done.done())
                 {
-                    // Job is done
-                    queue_enqueue(ctx->m_jobs_queue, &work->m_job);
+                    // Job is done, return it to the worker that created it
+                    s32 const worker_index = job->m_worker_index;
+                    queue_enqueue(ctx->m_worker_contexts[worker_index].m_jobs_done_queue, &job);
                 }
 
                 // Return work item ?

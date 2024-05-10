@@ -161,41 +161,37 @@ namespace ncore
         };
     } // namespace mpmc
 
-    namespace njob
+    struct mpmc_queue_t
     {
-        struct queue_t
-        {
-        };
+    };
 
-        queue_t* queue_create(alloc_t* allocator, s32 item_count, s32 item_size)
-        {
-            s32 const array_size = (item_count + 1) * math::alignUp(item_size + sizeof(mpmc::slot_t), mpmc::cacheline_size);
-            void*     mem        = allocator->allocate(array_size + sizeof(mpmc::queue_t), mpmc::cacheline_size);
-            if (mem == nullptr)
-                return nullptr;
-            void*          array_data = ((byte*)mem + sizeof(mpmc::queue_t));
-            mpmc::queue_t* queue      = new (mem) mpmc::queue_t(array_data, array_size, item_size);
-            return (queue_t*)queue;
-        }
+    mpmc_queue_t* mpmc_queue_create(alloc_t* allocator, s32 item_count, s32 item_size)
+    {
+        s32 const array_size = (item_count + 1) * math::alignUp(item_size + sizeof(mpmc::slot_t), mpmc::cacheline_size);
+        void*     mem        = allocator->allocate(array_size + sizeof(mpmc::queue_t), mpmc::cacheline_size);
+        if (mem == nullptr)
+            return nullptr;
+        void*          array_data = ((byte*)mem + sizeof(mpmc::queue_t));
+        mpmc::queue_t* queue      = new (mem) mpmc::queue_t(array_data, array_size, item_size);
+        return (mpmc_queue_t*)queue;
+    }
 
-        void queue_destroy(alloc_t* allocator, queue_t* queue)
-        {
-            mpmc::queue_t* mpmc_queue = (mpmc::queue_t*)queue;
-            allocator->deallocate(mpmc_queue);
-        }
+    void mpmc_queue_destroy(alloc_t* allocator, mpmc_queue_t* queue)
+    {
+        mpmc::queue_t* mpmc_queue = (mpmc::queue_t*)queue;
+        allocator->deallocate(mpmc_queue);
+    }
 
-        void queue_enqueue(queue_t* queue, void* item)
-        {
-            mpmc::queue_t* mpmc_queue = (mpmc::queue_t*)queue;
-            mpmc_queue->push(item);
-        }
+    void mpmc_queue_enqueue(mpmc_queue_t* queue, void* item)
+    {
+        mpmc::queue_t* mpmc_queue = (mpmc::queue_t*)queue;
+        mpmc_queue->push(item);
+    }
 
-        bool queue_dequeue(queue_t* queue, void* item)
-        {
-            mpmc::queue_t* mpmc_queue = (mpmc::queue_t*)queue;
-            return mpmc_queue->try_pop(item);
-        }
-
-    } // namespace njob
+    bool mpmc_queue_dequeue(mpmc_queue_t* queue, void* item)
+    {
+        mpmc::queue_t* mpmc_queue = (mpmc::queue_t*)queue;
+        return mpmc_queue->try_pop(item);
+    }
 
 } // namespace ncore
