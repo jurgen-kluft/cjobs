@@ -18,38 +18,36 @@ namespace ncore
             std::atomic<s32> turn;
             // storage ....
 
-            void store(void* item, u32 item_size) noexcept
+            inline void store(void* item, u32 item_size) noexcept
             {
-                byte*             storage = (byte*)((byte*)this + sizeof(std::atomic<int_t>));
-                byte const*       src     = (byte const*)item;
-                byte const* const end     = src + item_size;
+                byte*             dst = (byte*)((byte*)this + sizeof(slot_t));
+                byte const*       src = (byte const*)item;
+                byte const* const end = src + item_size;
                 while (src < end)
-                    *storage++ = *src++;
+                    *dst++ = *src++;
             }
 
-            void retrieve(void* item, u32 item_size) noexcept
+            inline void retrieve(void* item, u32 item_size) noexcept
             {
-                byte const* storage = (byte*)((byte*)this + sizeof(std::atomic<int_t>));
-                byte*       dst     = (byte*)item;
-                byte* const end     = dst + item_size;
+                byte const* src = (byte*)((byte*)this + sizeof(slot_t));
+                byte*       dst = (byte*)item;
+                byte* const end = dst + item_size;
                 while (dst < end)
-                    *dst++ = *storage++;
+                    *dst++ = *src++;
             }
         };
-        
+
         class queue_t
         {
         public:
             explicit queue_t(void* array, u32 array_size, u32 item_size)
-                : m_item_size(item_size)
-                , m_slot_size(((item_size + sizeof(slot_t) + cacheline_size - 1) / cacheline_size) * cacheline_size)
-                , m_slots((byte*)array)
-                , m_capacity((array_size / m_slot_size) - 1) // Note: We need one additional (dummy) slot to prevent false sharing on the last slot
-                , m_head(0)
+                : m_head(0)
+                , m_producer((byte*)array, item_size, ((item_size + cacheline_size - 1) / cacheline_size) * cacheline_size, array_size)
                 , m_tail(0)
+                , m_consumer((byte*)array, item_size, ((item_size + cacheline_size - 1) / cacheline_size) * cacheline_size, array_size)
             {
-                ASSERTS((int_t)m_slots % cacheline_size == 0, "array must be aligned to cache line boundary to prevent false sharing");
-                static_assert(sizeof(queue_t) % cacheline_size == 0, "sizeof(queue_t) must be a multiple of cache line size to prevent false sharing between adjacent queues");
+                ASSERTS((int_t)array % cacheline_size == 0, "array must be aligned to cache line boundary to prevent false sharing");
+                static_assert(sizeof(queue_t) == 2 * cacheline_size, "sizeof(queue_t) must be 2 cache lines in size to prevent false sharing between adjacent queues");
                 static_assert(offsetof(queue_t, m_tail) - offsetof(queue_t, m_head) == static_cast<std::ptrdiff_t>(cacheline_size), "head and tail must be a cache line apart to prevent false sharing");
             }
 
@@ -62,10 +60,10 @@ namespace ncore
             void push(void* item) noexcept
             {
                 auto const head = m_head.fetch_add(1);
-                auto&      slot = *((slot_t*)(m_slots + (idx(head) * m_slot_size)));
-                while (turn(head) * 2 != slot.turn.load(std::memory_order_acquire)) {}
-                slot.store(item, m_item_size);
-                slot.turn.store(turn(head) * 2 + 1, std::memory_order_release);
+                auto&      slot = *((slot_t*)(m_producer.m_slots + (m_producer.idx(head) * m_producer.m_slot_size)));
+                while (m_producer.turn(head) * 2 != slot.turn.load(std::memory_order_acquire)) {}
+                slot.store(item, m_producer.m_item_size);
+                slot.turn.store(m_producer.turn(head) * 2 + 1, std::memory_order_release);
             }
 
             bool try_push(void* item) noexcept
@@ -73,14 +71,14 @@ namespace ncore
                 auto head = m_head.load(std::memory_order_acquire);
                 for (;;)
                 {
-                    auto& slot = *((slot_t*)(m_slots + (idx(head) * m_slot_size)));
+                    auto& slot = *((slot_t*)(m_producer.m_slots + (m_producer.idx(head) * m_producer.m_slot_size)));
 
-                    if (turn(head) * 2 == slot.turn.load(std::memory_order_acquire))
+                    if (m_producer.turn(head) * 2 == slot.turn.load(std::memory_order_acquire))
                     {
                         if (m_head.compare_exchange_strong(head, head + 1))
                         {
-                            slot.store(item, m_item_size);
-                            slot.turn.store(turn(head) * 2 + 1, std::memory_order_release);
+                            slot.store(item, m_producer.m_item_size);
+                            slot.turn.store(m_producer.turn(head) * 2 + 1, std::memory_order_release);
                             return true;
                         }
                     }
@@ -99,10 +97,10 @@ namespace ncore
             void pop(void* item) noexcept
             {
                 auto const tail = m_tail.fetch_add(1);
-                auto&      slot = *((slot_t*)(m_slots + (idx(tail) * m_slot_size)));
-                while (turn(tail) * 2 + 1 != slot.turn.load(std::memory_order_acquire)) {}
-                slot.retrieve(item, m_item_size);
-                slot.turn.store(turn(tail) * 2 + 2, std::memory_order_release);
+                auto&      slot = *((slot_t*)(m_consumer.m_slots + (m_consumer.idx(tail) * m_consumer.m_slot_size)));
+                while (m_consumer.turn(tail) * 2 + 1 != slot.turn.load(std::memory_order_acquire)) {}
+                slot.retrieve(item, m_consumer.m_item_size);
+                slot.turn.store(m_consumer.turn(tail) * 2 + 2, std::memory_order_release);
             }
 
             bool try_pop(void* item) noexcept
@@ -110,13 +108,13 @@ namespace ncore
                 auto tail = m_tail.load(std::memory_order_acquire);
                 for (;;)
                 {
-                    auto& slot = *((slot_t*)(m_slots + (idx(tail) * m_slot_size)));
-                    if (turn(tail) * 2 + 1 == slot.turn.load(std::memory_order_acquire))
+                    auto& slot = *((slot_t*)(m_consumer.m_slots + (m_consumer.idx(tail) * m_consumer.m_slot_size)));
+                    if (m_consumer.turn(tail) * 2 + 1 == slot.turn.load(std::memory_order_acquire))
                     {
                         if (m_tail.compare_exchange_strong(tail, tail + 1))
                         {
-                            slot.retrieve(item, m_item_size);
-                            slot.turn.store(turn(tail) * 2 + 2, std::memory_order_release);
+                            slot.retrieve(item, m_consumer.m_item_size);
+                            slot.turn.store(m_consumer.turn(tail) * 2 + 2, std::memory_order_release);
                             return true;
                         }
                     }
@@ -132,33 +130,32 @@ namespace ncore
                 }
             }
 
-            /// Returns the number of elements in the queue.
-            /// The size can be negative when the queue is empty and there is at least one
-            /// reader waiting. Since this is a concurrent queue the size is only a best
-            /// effort guess until all reader and writer threads have been joined.
-            s32 size() const noexcept
+            struct header_t
             {
-                // TODO: How can we deal with wrapped queue on 32bit?
-                return static_cast<s32>(m_head.load(std::memory_order_relaxed) - m_tail.load(std::memory_order_relaxed));
-            }
+                header_t(byte* slots, s32 item_size, s32 slot_size, s32 capacity)
+                    : m_slots(slots)
+                    , m_slot_size(slot_size)
+                    , m_item_size(item_size)
+                    , m_capacity((capacity / slot_size) - 1)
+                    , m_dummy(0)
+                {
+                }
 
-            /// Returns true if the queue is empty.
-            /// Since this is a concurrent queue this is only a best effort guess
-            /// until all reader and writer threads have been joined.
-            bool       empty() const noexcept { return size() <= 0; }
-            inline s32 capacity() const noexcept { return m_capacity; }
+                constexpr s32 idx(s32 i) const noexcept { return i % m_capacity; }
+                constexpr s32 turn(s32 i) const noexcept { return i / m_capacity; }
 
-            constexpr s32 idx(s32 i) const noexcept { return i % m_capacity; }
-            constexpr s32 turn(s32 i) const noexcept { return i / m_capacity; }
-
-            const s32   m_item_size;
-            const s32   m_slot_size;
-            byte* const m_slots;
-            const s32   m_capacity; // Note: If capacity is a power of 2, we can use a mask instead of modulo and a shift operation instead of a division
+                byte* const m_slots;
+                s32 const   m_slot_size;
+                s32 const   m_item_size;
+                s32 const   m_capacity;
+                s32 const   m_dummy;
+            };
 
             // Align to avoid false sharing between head and tail
             alignas(cacheline_size) std::atomic<s32> m_head;
+            header_t m_producer;
             alignas(cacheline_size) std::atomic<s32> m_tail;
+            header_t m_consumer;
         };
     } // namespace mpsc
 

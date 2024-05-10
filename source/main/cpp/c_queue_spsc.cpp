@@ -16,18 +16,17 @@ namespace ncore
         class queue_t
         {
         public:
+            // Note: We need one additional (dummy) slot to prevent false sharing on the last slot
             explicit queue_t(void* array, u32 array_size, u32 item_size)
-                : m_item_size(item_size)
-                , m_slot_size(((item_size + cacheline_size - 1) / cacheline_size) * cacheline_size)
-                , m_slots((byte*)array)
-                , m_capacity((array_size / m_slot_size) - 1) // Note: We need one additional (dummy) slot to prevent false sharing on the last slot
-                , m_writeIdx(0)
+                : m_writeIdx(0)
+                , m_producer((byte*)array, item_size, ((item_size + cacheline_size - 1) / cacheline_size) * cacheline_size, array_size)
                 , m_readIdxCache(0)
                 , m_readIdx(0)
+                , m_consumer((byte*)array, item_size, ((item_size + cacheline_size - 1) / cacheline_size) * cacheline_size, array_size)
                 , m_writeIdxCache(0)
             {
                 static_assert(alignof(queue_t) == cacheline_size, "");
-                static_assert(sizeof(queue_t) >= 3 * cacheline_size, "");
+                static_assert(sizeof(queue_t) == 2 * cacheline_size, "");
                 assert(reinterpret_cast<char*>(&m_readIdx) - reinterpret_cast<char*>(&m_writeIdx) >= static_cast<std::ptrdiff_t>(cacheline_size));
             }
 
@@ -39,7 +38,7 @@ namespace ncore
             {
                 auto const writeIdx     = m_writeIdx.load(std::memory_order_relaxed);
                 auto       nextWriteIdx = writeIdx + 1;
-                if (nextWriteIdx == m_capacity)
+                if (nextWriteIdx == m_producer.m_capacity)
                 {
                     nextWriteIdx = 0;
                 }
@@ -49,8 +48,8 @@ namespace ncore
                 }
 
                 // store item
-                byte*             dst = m_slots + (writeIdx * m_slot_size);
-                byte const* const end = dst + m_item_size;
+                byte*             dst = m_producer.m_slots + (writeIdx * m_producer.m_slot_size);
+                byte const* const end = dst + m_producer.m_item_size;
                 byte const*       src = (byte const*)item;
                 while (dst < end)
                     *dst++ = *src++;
@@ -62,7 +61,7 @@ namespace ncore
             {
                 auto const writeIdx     = m_writeIdx.load(std::memory_order_relaxed);
                 auto       nextWriteIdx = writeIdx + 1;
-                if (nextWriteIdx == m_capacity)
+                if (nextWriteIdx == m_producer.m_capacity)
                 {
                     nextWriteIdx = 0;
                 }
@@ -76,8 +75,8 @@ namespace ncore
                 }
 
                 // store item
-                byte*             dst = m_slots + (writeIdx * m_slot_size);
-                byte const* const end = dst + m_item_size;
+                byte*             dst = m_producer.m_slots + (writeIdx * m_producer.m_slot_size);
+                byte const* const end = dst + m_producer.m_item_size;
                 byte const*       src = (byte const*)item;
                 while (dst < end)
                     *dst++ = *src++;
@@ -99,14 +98,14 @@ namespace ncore
                 }
 
                 // retrieve item
-                byte const*       src = m_slots + (readIdx * m_slot_size);
-                byte const* const end = src + m_item_size;
+                byte const*       src = m_consumer.m_slots + (readIdx * m_consumer.m_slot_size);
+                byte const* const end = src + m_consumer.m_item_size;
                 byte*             dst = (byte*)item;
                 while (src < end)
                     *dst++ = *src++;
 
                 auto nextReadIdx = readIdx + 1;
-                if (nextReadIdx == m_capacity)
+                if (nextReadIdx == m_consumer.m_capacity)
                 {
                     nextReadIdx = 0;
                 }
@@ -120,27 +119,47 @@ namespace ncore
                 std::ptrdiff_t diff = m_writeIdx.load(std::memory_order_acquire) - m_readIdx.load(std::memory_order_acquire);
                 if (diff < 0)
                 {
-                    diff += m_capacity;
+                    diff += m_consumer.m_capacity;
                 }
                 return static_cast<s32>(diff);
             }
 
             inline bool empty() const noexcept { return m_writeIdx.load(std::memory_order_acquire) == m_readIdx.load(std::memory_order_acquire); }
-            inline s32  capacity() const noexcept { return m_capacity; }
+            inline s32  capacity() const noexcept { return m_consumer.m_capacity; }
 
-        private:
-            byte* m_slots;
-            s32   m_item_size;
-            s32   m_slot_size;
-            s32   m_capacity;
+            DCORE_CLASS_PLACEMENT_NEW_DELETE
+
+            struct header_t
+            {
+                header_t(byte* slots, s32 item_size, s32 slot_size, s32 capacity)
+                    : m_slot_size(slot_size)
+                    , m_slots(slots)
+                    , m_item_size(item_size)
+                    , m_capacity((capacity / slot_size) - 1)
+                {
+                }
+                byte* const m_slots;
+                s32 const   m_slot_size;
+                s32 const   m_item_size;
+                s32 const   m_capacity;
+            };
 
             // Align to cache line size in order to avoid false sharing
-            // m_readIdxCache and m_writeIdxCache is used to reduce the amount of cache
-            // coherency traffic
+            // m_readIdxCache and m_writeIdxCache is used to reduce the amount of cache coherency traffic
+
+            // Producer
             alignas(cacheline_size) std::atomic<s32> m_writeIdx;
-            alignas(cacheline_size) s32 m_readIdxCache;
+            header_t m_producer;
+            s32      m_readIdxCache;
+            // Is this necessary ?, this is already the cacheline of the producer.
+            // alignas(cacheline_size) s32 m_readIdxCache;
+
+            // Consumer
             alignas(cacheline_size) std::atomic<s32> m_readIdx;
-            alignas(cacheline_size) s32 m_writeIdxCache;
+            header_t m_consumer;
+            s32      m_writeIdxCache;
+            // Is this necessary ?, this is already the cacheline of the consumer.
+            // alignas(cacheline_size) s32 m_writeIdxCache;
         };
     } // namespace spsc
 

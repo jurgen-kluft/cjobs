@@ -17,14 +17,12 @@ namespace ncore
         {
         public:
             explicit queue_t(void* array, u32 array_size, u32 item_size)
-                : m_item_size(item_size)
-                , m_slot_size(((item_size + cacheline_size - 1) / cacheline_size) * cacheline_size)
-                , m_slots((byte*)array)
-                , m_capacity((array_size / m_slot_size) - 1) // Note: We need one additional (dummy) slot to prevent false sharing on the last slot
-                , m_head(0)
+                : m_head(0)
+                , m_producer((byte*)array, item_size, ((item_size + cacheline_size - 1) / cacheline_size) * cacheline_size, array_size)
                 , m_tail(0)
+                , m_consumer((byte*)array, item_size, ((item_size + cacheline_size - 1) / cacheline_size) * cacheline_size, array_size)
             {
-                ASSERTS((int_t)m_slots % cacheline_size == 0, "array must be aligned to cache line boundary to prevent false sharing");
+                ASSERTS((int_t)array % cacheline_size == 0, "array must be aligned to cache line boundary to prevent false sharing");
                 static_assert(sizeof(queue_t) % cacheline_size == 0, "sizeof(queue_t) must be a multiple of cache line size to prevent false sharing between adjacent queues");
                 static_assert(offsetof(queue_t, m_tail) - offsetof(queue_t, m_head) == static_cast<std::ptrdiff_t>(cacheline_size), "head and tail must be a cache line apart to prevent false sharing");
             }
@@ -38,24 +36,32 @@ namespace ncore
             bool try_push(void* item) { return false; }
             bool try_pop(void* item) { return false; }
 
-            /// Returns true if the queue is empty.
-            /// Since this is a concurrent queue this is only a best effort guess
-            /// until all reader and writer threads have been joined.
-            s32        size() const noexcept { return m_head.load(std::memory_order_relaxed) - m_tail.load(std::memory_order_relaxed); }
-            bool       empty() const noexcept { return size() <= 0; }
-            inline s32 capacity() const noexcept { return m_capacity; }
+            struct header_t
+            {
+                header_t(byte* slots, s32 item_size, s32 slot_size, s32 capacity)
+                    : m_slots(slots)
+                    , m_item_size(item_size)
+                    , m_slot_size(slot_size)
+                    , m_capacity((capacity / slot_size) - 1)
+                    , m_dummy(0)
+                {
+                }
 
-            constexpr s32 idx(s32 i) const noexcept { return i % m_capacity; }
-            constexpr s32 turn(s32 i) const noexcept { return i / m_capacity; }
+                constexpr s32 idx(s32 i) const noexcept { return i % m_capacity; }
+                constexpr s32 turn(s32 i) const noexcept { return i / m_capacity; }
 
-            const s32   m_item_size;
-            const s32   m_slot_size;
-            byte* const m_slots;
-            const s32   m_capacity; // Note: If capacity is a power of 2, we can use a mask instead of modulo and a shift operation instead of a division
+                byte* const m_slots;
+                s32 const   m_item_size;
+                s32 const   m_slot_size;
+                s32 const   m_capacity;
+                s32 const   m_dummy;
+            };
 
             // Align to avoid false sharing between head and tail
             alignas(cacheline_size) std::atomic<s32> m_head;
+            header_t m_producer;
             alignas(cacheline_size) std::atomic<s32> m_tail;
+            header_t m_consumer;
         };
     } // namespace spmc
 

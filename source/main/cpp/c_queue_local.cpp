@@ -27,10 +27,6 @@ namespace ncore
                 static_assert(alignof(queue_t) == size_alignment, "");
             }
 
-            // non-copyable and non-movable
-            queue_t(const queue_t&)            = delete;
-            queue_t& operator=(const queue_t&) = delete;
-
             inline bool try_push(void* item)
             {
                 auto const writeIdx     = m_writeIdx;
@@ -79,26 +75,14 @@ namespace ncore
                 return true;
             }
 
-            inline s32 size() const noexcept
-            {
-                s32 diff = m_writeIdx - m_readIdx;
-                if (diff < 0)
-                {
-                    diff += m_capacity;
-                }
-                return diff;
-            }
+            DCORE_CLASS_PLACEMENT_NEW_DELETE
 
-            inline bool empty() const noexcept { return m_writeIdx == m_readIdx; }
-            inline s32  capacity() const noexcept { return m_capacity; }
-
-        private:
             byte* m_slots;
+            s32   m_writeIdx;
+            s32   m_readIdx;
             u16   m_item_size;
             u16   m_slot_size;
             s32   m_capacity;
-            s32   m_writeIdx;
-            s32   m_readIdx;
         };
     } // namespace local
 
