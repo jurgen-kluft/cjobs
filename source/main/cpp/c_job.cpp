@@ -3,6 +3,7 @@
 #include "cbase/c_integer.h"
 
 #include "cjobs/c_queue.h"
+#include "cjobs/c_auto_reset_event.h"
 #include "cjobs/c_job.h"
 
 #include <atomic>
@@ -37,92 +38,33 @@ namespace ncore
             ParallelFor = 1
         };
 
-#ifdef TARGET_MAC
         struct job_done_t
         {
-            std::atomic<s32> m_done_count;
-            s32              m_total_count;
-            semaphore_t      m_done;
-            inline void      init(s32 count)
+            std::atomic<s32>   m_done_count;
+            autoreset_event_t* m_event;
+
+            // Windows: This should be a WaitHandle[] of AutoResetEvents
+            // Mac:
+
+            inline void init(alloc_t* allocator, s32 count)
             {
-                semaphore_create(mach_task_self(), &m_done, SYNC_POLICY_FIFO, count);
-                m_done_count.store(0);
+                create(allocator, m_event, count);
+                m_done_count.store(count);
             }
             inline bool done()
             {
-                s32 const done = m_done_count.fetch_add(1);
-                semaphore_signal(m_done);
-                return done == m_total_count - 1;
-            }
-            inline void exit() { semaphore_destroy(mach_task_self(), m_done); }
-            inline bool is_done() const { return m_done_count.load() == m_total_count; }
-            inline void signal() { semaphore_signal(m_done); }
-            inline void wait() { semaphore_wait(m_done); }
-            bool        try_wait(u32 milliseconds)
-            {
-                mach_timespec_t ts;
-                ts.tv_sec  = milliseconds / 1000;
-                ts.tv_nsec = (milliseconds % 1000) * 1000000;
-                return semaphore_timedwait(m_done, ts) == KERN_SUCCESS;
-            }
-        };
-#elif defined(TARGET_PC)
-        struct job_done_t
-        {
-            std::atomic<s32> m_done_count;
-            s32              m_total_count;
-            void*            m_done;
-            inline void      init(s32 count)
-            {
-                // semaphore_create(mach_task_self(), &m_done, SYNC_POLICY_FIFO, count);
-                m_done = CreateSemaphoreW(nullptr, 0, count, nullptr);
-                m_done_count.store(0);
-            }
-            inline bool done()
-            {
-                s32 const done = m_done_count.fetch_add(1);
-                // semaphore_signal(m_done);
-                signal();
-                return done == m_total_count - 1;
-            }
-            inline void exit()
-            {
-                // semaphore_destroy(mach_task_self(), m_done);
-                CloseHandle(m_done);
-            }
-            inline bool is_done() const { return m_done_count.load() == m_total_count; }
-            inline void signal()
-            {
-                // semaphore_signal(m_done);
-                if (!ReleaseSemaphore(m_done, 1, nullptr))
+                s32 const done = m_done_count.fetch_sub(1);
+                if (done == 0)
                 {
-                    // cannot signal semaphore
-                }
-            }
-            inline void wait()
-            {
-                // semaphore_wait(m_done);
-                switch (WaitForSingleObject(m_done, INFINITE))
-                {
-                    case WAIT_OBJECT_0: return;
-                    default:
-                        // wait for semaphore failed
-                        break;
-                }
-            }
-            bool try_wait(u32 milliseconds)
-            {
-                switch (WaitForSingleObject(m_done, milliseconds))
-                {
-                    case WAIT_OBJECT_0: return true;
-                    default:
-                        // wait for semaphore failed
-                        break;
+                    signal(m_event);
+                    return true;
                 }
                 return false;
             }
+            inline void exit(alloc_t* allocator) { destroy(allocator, m_event); }
+            inline bool is_done() const { return m_done_count.load() == 0; }
+            inline void wait_done() { wait(m_event); }
         };
-#endif
 
         struct job_t
         {
