@@ -11,23 +11,27 @@ namespace ncore
 {
     namespace local
     {
-        static constexpr s32 size_alignment = 8;
+        static constexpr s32 c_cacheline_size = 64;
+        static constexpr s32 c_item_size      = 8;
+
+        struct slot_t
+        {
+            u64 m_item;
+        };
 
         class queue_t
         {
         public:
-            explicit queue_t(void* array, u32 array_size, u16 item_size)
-                : m_item_size(item_size)
-                , m_slot_size(((item_size + size_alignment - 1) / size_alignment) * size_alignment)
-                , m_slots((byte*)array)
-                , m_capacity((array_size / m_slot_size))
+            explicit queue_t(slot_t* array, u32 array_size)
+                : m_slots(array)
+                , m_capacity((array_size / c_item_size))
                 , m_writeIdx(0)
                 , m_readIdx(0)
             {
-                static_assert(alignof(queue_t) == size_alignment, "");
+                static_assert(sizeof(queue_t) == c_cacheline_size, "queue_t should be a multiple of c_cacheline_size bytes");
             }
 
-            inline bool try_push(void* item)
+            inline bool try_push(u64 item)
             {
                 auto const writeIdx     = m_writeIdx;
                 auto       nextWriteIdx = writeIdx + 1;
@@ -41,17 +45,14 @@ namespace ncore
                 }
 
                 // store item
-                byte*             dst = m_slots + (writeIdx * m_slot_size);
-                byte const* const end = dst + m_item_size;
-                byte const*       src = (byte const*)item;
-                while (dst < end)
-                    *dst++ = *src++;
+                slot_t* dst = m_slots + writeIdx;
+                dst->m_item = item;
 
                 m_writeIdx = nextWriteIdx;
                 return true;
             }
 
-            bool try_pop(void* item) noexcept
+            bool try_pop(u64& item) noexcept
             {
                 auto const readIdx = m_readIdx;
                 if (readIdx == m_writeIdx)
@@ -60,11 +61,8 @@ namespace ncore
                 }
 
                 // retrieve item
-                byte const*       src = m_slots + (readIdx * m_slot_size);
-                byte const* const end = src + m_item_size;
-                byte*             dst = (byte*)item;
-                while (src < end)
-                    *dst++ = *src++;
+                slot_t const* src = m_slots + readIdx;
+                item              = src->m_item;
 
                 auto nextReadIdx = readIdx + 1;
                 if (nextReadIdx == m_capacity)
@@ -77,12 +75,11 @@ namespace ncore
 
             DCORE_CLASS_PLACEMENT_NEW_DELETE
 
-            byte* m_slots;
-            s32   m_writeIdx;
-            s32   m_readIdx;
-            u16   m_item_size;
-            u16   m_slot_size;
-            s32   m_capacity;
+            slot_t* m_slots;
+            s32     m_writeIdx;
+            s32     m_readIdx;
+            s32     m_capacity;
+            s32     m_dummy[16 - 5];
         };
     } // namespace local
 
@@ -90,14 +87,16 @@ namespace ncore
     {
     };
 
-    local_queue_t* local_queue_create(alloc_t* allocator, s32 item_count, s32 item_size)
+    local_queue_t* local_queue_create(alloc_t* allocator, s32 item_count)
     {
-        s32 const array_size = item_count * math::alignUp(item_size, local::size_alignment);
-        void*     mem        = allocator->allocate(array_size + sizeof(local::queue_t), local::size_alignment);
+        s32 const array_size = item_count * sizeof(local::slot_t);
+        void*     mem        = allocator->allocate(sizeof(local::queue_t) + array_size, local::c_cacheline_size);
         if (mem == nullptr)
             return nullptr;
-        void*           array_data = ((byte*)mem + sizeof(local::queue_t));
-        local::queue_t* queue      = new (mem) local::queue_t(array_data, array_size, item_size);
+        local::slot_t* array_data = (local::slot_t*)((byte*)mem + sizeof(local::queue_t));
+        ASSERTS(((u64)array_data & 0x7) == 0, "array_data is not aligned to 8 bytes");
+        local::queue_t* queue = new (mem) local::queue_t(array_data, array_size);
+        ASSERTS(((u64)queue & (local::c_cacheline_size)) == 0, "queue is not aligned to c_cacheline_size bytes");
         return (local_queue_t*)queue;
     }
 
@@ -107,13 +106,13 @@ namespace ncore
         allocator->deallocate(local_queue);
     }
 
-    bool queue_enqueue(local_queue_t* queue, void* item)
+    bool queue_enqueue(local_queue_t* queue, u64 item)
     {
         local::queue_t* local_queue = (local::queue_t*)queue;
         local_queue->try_push(item);
     }
 
-    bool queue_dequeue(local_queue_t* queue, void* item)
+    bool queue_dequeue(local_queue_t* queue, u64& item)
     {
         local::queue_t* local_queue = (local::queue_t*)queue;
         return local_queue->try_pop(item);

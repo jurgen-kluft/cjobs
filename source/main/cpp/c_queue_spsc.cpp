@@ -11,23 +11,24 @@ namespace ncore
 {
     namespace spsc
     {
-        static constexpr int_t cacheline_size = 64; // std::hardware_destructive_interference_size;
+        static constexpr int_t c_cacheline_size = 64; // std::hardware_destructive_interference_size;
+        static constexpr u32   c_item_size      = 8;
 
         class queue_t
         {
         public:
             // Note: We need one additional (dummy) slot to prevent false sharing on the last slot
-            explicit queue_t(void* array, u32 array_size, u32 item_size)
+            explicit queue_t(void* array, u32 array_size)
                 : m_writeIdx(0)
-                , m_producer((byte*)array, item_size, ((item_size + cacheline_size - 1) / cacheline_size) * cacheline_size, array_size)
+                , m_producer((u64*)array, array_size)
                 , m_readIdxCache(0)
                 , m_readIdx(0)
-                , m_consumer((byte*)array, item_size, ((item_size + cacheline_size - 1) / cacheline_size) * cacheline_size, array_size)
+                , m_consumer((u64*)array, array_size)
                 , m_writeIdxCache(0)
             {
-                static_assert(alignof(queue_t) == cacheline_size, "");
-                static_assert(sizeof(queue_t) == 2 * cacheline_size, "");
-                assert(reinterpret_cast<char*>(&m_readIdx) - reinterpret_cast<char*>(&m_writeIdx) >= static_cast<std::ptrdiff_t>(cacheline_size));
+                static_assert(alignof(queue_t) == c_cacheline_size, "");
+                static_assert(sizeof(queue_t) == 2 * c_cacheline_size, "");
+                assert(reinterpret_cast<char*>(&m_readIdx) - reinterpret_cast<char*>(&m_writeIdx) >= static_cast<std::ptrdiff_t>(c_cacheline_size));
             }
 
             // non-copyable and non-movable
@@ -48,16 +49,13 @@ namespace ncore
                 }
 
                 // store item
-                byte*             dst = m_producer.m_slots + (writeIdx * m_producer.m_slot_size);
-                byte const* const end = dst + m_producer.m_item_size;
-                byte const*       src = (byte const*)item;
-                while (dst < end)
-                    *dst++ = *src++;
+                u64* dst = m_producer.m_slots + writeIdx;
+                *dst     = (u64)item;
 
                 m_writeIdx.store(nextWriteIdx, std::memory_order_release);
             }
 
-            inline bool try_push(void* item)
+            inline bool try_push(u64 item)
             {
                 auto const writeIdx     = m_writeIdx.load(std::memory_order_relaxed);
                 auto       nextWriteIdx = writeIdx + 1;
@@ -75,17 +73,14 @@ namespace ncore
                 }
 
                 // store item
-                byte*             dst = m_producer.m_slots + (writeIdx * m_producer.m_slot_size);
-                byte const* const end = dst + m_producer.m_item_size;
-                byte const*       src = (byte const*)item;
-                while (dst < end)
-                    *dst++ = *src++;
+                u64* dst = m_producer.m_slots + writeIdx;
+                *dst     = item;
 
                 m_writeIdx.store(nextWriteIdx, std::memory_order_release);
                 return true;
             }
 
-            bool try_pop(void* item) noexcept
+            bool try_pop(u64& item) noexcept
             {
                 auto const readIdx = m_readIdx.load(std::memory_order_relaxed);
                 if (readIdx == m_writeIdxCache)
@@ -98,11 +93,8 @@ namespace ncore
                 }
 
                 // retrieve item
-                byte const*       src = m_consumer.m_slots + (readIdx * m_consumer.m_slot_size);
-                byte const* const end = src + m_consumer.m_item_size;
-                byte*             dst = (byte*)item;
-                while (src < end)
-                    *dst++ = *src++;
+                u64 const* src = m_consumer.m_slots + readIdx;
+                item           = *src;
 
                 auto nextReadIdx = readIdx + 1;
                 if (nextReadIdx == m_consumer.m_capacity)
@@ -114,52 +106,32 @@ namespace ncore
                 return true;
             }
 
-            inline s32 size() const noexcept
-            {
-                std::ptrdiff_t diff = m_writeIdx.load(std::memory_order_acquire) - m_readIdx.load(std::memory_order_acquire);
-                if (diff < 0)
-                {
-                    diff += m_consumer.m_capacity;
-                }
-                return static_cast<s32>(diff);
-            }
-
-            inline bool empty() const noexcept { return m_writeIdx.load(std::memory_order_acquire) == m_readIdx.load(std::memory_order_acquire); }
-            inline s32  capacity() const noexcept { return m_consumer.m_capacity; }
-
             DCORE_CLASS_PLACEMENT_NEW_DELETE
 
             struct header_t
             {
-                header_t(byte* slots, s32 item_size, s32 slot_size, s32 capacity)
-                    : m_slot_size(slot_size)
-                    , m_slots(slots)
-                    , m_item_size(item_size)
-                    , m_capacity((capacity / slot_size) - 1)
+                header_t(u64* slots, s32 capacity)
+                    : m_slots(slots)
+                    , m_capacity((capacity / c_item_size) - 1)
                 {
                 }
-                byte* const m_slots;
-                s32 const   m_slot_size;
-                s32 const   m_item_size;
-                s32 const   m_capacity;
+
+                u64* const m_slots;
+                s32 const  m_capacity;
             };
 
             // Align to cache line size in order to avoid false sharing
             // m_readIdxCache and m_writeIdxCache is used to reduce the amount of cache coherency traffic
 
             // Producer
-            alignas(cacheline_size) std::atomic<s32> m_writeIdx;
-            header_t m_producer;
+            alignas(c_cacheline_size) std::atomic<s32> m_writeIdx;
             s32      m_readIdxCache;
-            // Is this necessary ?, this is already the cacheline of the producer.
-            // alignas(cacheline_size) s32 m_readIdxCache;
+            header_t m_producer;
 
             // Consumer
-            alignas(cacheline_size) std::atomic<s32> m_readIdx;
-            header_t m_consumer;
+            alignas(c_cacheline_size) std::atomic<s32> m_readIdx;
             s32      m_writeIdxCache;
-            // Is this necessary ?, this is already the cacheline of the consumer.
-            // alignas(cacheline_size) s32 m_writeIdxCache;
+            header_t m_consumer;
         };
     } // namespace spsc
 
@@ -167,14 +139,14 @@ namespace ncore
     {
     };
 
-    spsc_queue_t* spsc_queue_create(alloc_t* allocator, s32 item_count, s32 item_size)
+    spsc_queue_t* spsc_queue_create(alloc_t* allocator, s32 item_count)
     {
-        s32 const array_size = (item_count + 1) * math::alignUp(item_size, spsc::cacheline_size);
-        void*     mem        = allocator->allocate(array_size + sizeof(spsc::queue_t), spsc::cacheline_size);
+        s32 const array_size = (item_count + 1) * math::alignUp(spsc::c_item_size, spsc::c_cacheline_size);
+        void*     mem        = allocator->allocate(array_size + sizeof(spsc::queue_t), spsc::c_cacheline_size);
         if (mem == nullptr)
             return nullptr;
         void*          array_data = ((byte*)mem + sizeof(spsc::queue_t));
-        spsc::queue_t* queue      = new (mem) spsc::queue_t(array_data, array_size, item_size);
+        spsc::queue_t* queue      = new (mem) spsc::queue_t(array_data, array_size);
         return (spsc_queue_t*)queue;
     }
 
@@ -184,13 +156,13 @@ namespace ncore
         allocator->deallocate(spsc_queue);
     }
 
-    bool queue_enqueue(spsc_queue_t* queue, void* item)
+    bool queue_enqueue(spsc_queue_t* queue, u64 item)
     {
         spsc::queue_t* spsc_queue = (spsc::queue_t*)queue;
         return spsc_queue->try_push(item);
     }
 
-    bool queue_dequeue(spsc_queue_t* queue, void* item)
+    bool queue_dequeue(spsc_queue_t* queue, u64& item)
     {
         spsc::queue_t* spsc_queue = (spsc::queue_t*)queue;
         return spsc_queue->try_pop(item);

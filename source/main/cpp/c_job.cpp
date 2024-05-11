@@ -278,24 +278,25 @@ namespace ncore
 
         static void s_worker_thread(worker_t* worker)
         {
-            main_context_t* ctx   = worker->m_main_ctx;
-            s32 const       index = worker->m_index;
+            main_context_t*   main_ctx = worker->m_main_ctx;
+            worker_context_t* this_ctx = worker->m_worker_ctx;
+            s32 const         index    = worker->m_index;
 
             while (true)
             {
                 // Wait for work
                 work_t* work = nullptr;
-                queue_dequeue(worker->m_worker_ctx->m_scheduled_work, &work);
+                queue_dequeue(this_ctx->m_scheduled_work, &work);
 
                 if (work == nullptr)
                 {
                     // No work, steal work from other worker queues
-                    for (s32 i = 0; i < ctx->m_max_workers; ++i)
+                    for (s32 i = 0; i < main_ctx->m_max_workers; ++i)
                     {
                         if (i == index)
                             continue;
-                        worker_context_t* worker_ctx = &ctx->m_worker_contexts[i];
-                        if (queue_dequeue(worker_ctx->m_scheduled_work, &work))
+                        worker_context_t* other_worker_ctx = &main_ctx->m_worker_contexts[i];
+                        if (queue_dequeue(other_worker_ctx->m_scheduled_work, &work))
                             break;
                     }
                 }
@@ -316,13 +317,13 @@ namespace ncore
                 {
                     // Job is done, return it to the worker that created it
                     s32 const worker_index = job->m_worker_index;
-                    queue_enqueue(ctx->m_worker_contexts[worker_index].m_jobs_done_queue, &job);
+                    queue_enqueue(main_ctx->m_worker_contexts[worker_index].m_jobs_done_queue, &job);
                 }
 
                 // Return work item ?
                 // The whole range of work items can be release once this job itself is done
                 // So no need to actually free work items like this
-                // queue_enqueue(ctx->m_work_item_queue, &work);
+                // queue_enqueue(main_ctx->m_work_item_queue, &work);
             }
         }
 
