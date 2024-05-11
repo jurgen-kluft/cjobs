@@ -178,8 +178,12 @@ namespace ncore
 
         struct main_context_t
         {
+            mpmc_queue_t* m_jobs_free_queue; // This worker can take a new job from this queue and initialize it
+            mpmc_queue_t* m_jobs_new_queue;  // Queue of jobs that need to be processed
+            mpmc_queue_t* m_jobs_done_queue; // These are jobs that are 'done', can be pushed here from any worker thread
+
             u32               m_max_workers;      // Number of worker threads
-            mpmc_queue_t<s32> m_inactive_workers; // Worker threads that have no work, queue<s32>
+            mpmc_queue_t*     m_inactive_workers; // Worker threads that have no work, queue<s32>
             worker_context_t* m_worker_contexts;  // Worker thread contexts, worker_context_t[m_max_workers]
         };
 
@@ -189,7 +193,7 @@ namespace ncore
             s32 const thread_index = 0; // Which worker thread should we schedule the job on?
 
             job_t* job_item = nullptr;
-            queue_dequeue(ctx->m_jobs_queue, &job_item);
+            queue_dequeue(ctx->m_jobs_free_queue, &job_item);
             job_item->m_job          = job;
             job_item->m_array_length = 1;
             job_item->m_inner_count  = 1;
@@ -212,7 +216,7 @@ namespace ncore
             s32 const thread_index = 0; // Which worker thread should we schedule the job on?
 
             job_t* job_item = nullptr;
-            queue_dequeue(ctx->m_jobs_queue, &job_item);
+            queue_dequeue(ctx->m_jobs_free_queue, &job_item);
             job_item->m_job          = job;
             job_item->m_array_length = array_length;
             job_item->m_inner_count  = array_length;
@@ -230,25 +234,27 @@ namespace ncore
             return (job_handle_t)job_item;
         }
 
-        static job_handle_t s_schedule_parallel(main_context_t* ctx, ijob_t* job, s32 array_length, s32 innerloop_batch_count)
+        static job_handle_t s_schedule_parallel(main_context_t* ctx, ijob_t* job, s32 array_length, s32 inner_count)
         {
             s32 const thread_index = 0; // Which worker thread should we schedule the job on?
 
             job_t* job_item = nullptr;
-            queue_dequeue(ctx->m_jobs_queue, &job_item);
+            queue_dequeue(ctx->m_jobs_free_queue, &job_item);
             job_item->m_job          = job;
             job_item->m_array_length = array_length;
-            job_item->m_inner_count  = innerloop_batch_count;
+            job_item->m_inner_count  = inner_count;
             job_item->m_dependency   = nullptr;
 
             // Schedule job as N work items
-            s32 const N = (array_length + (innerloop_batch_count - 1)) / innerloop_batch_count;
+            s32 const N = (array_length + (inner_count - 1)) / inner_count;
             job_item->m_done.init(N);
+
+            // Should we round-robin the work items to the 'inactive' workers?
 
             s32 start = 0;
             while (start < array_length)
             {
-                s32 const end = math::min(start + innerloop_batch_count, array_length);
+                s32 const end = math::min(start + inner_count, array_length);
 
                 work_t* work = nullptr;
                 queue_dequeue(ctx->m_work_item_queue, &work);
@@ -321,11 +327,11 @@ namespace ncore
         }
 
         // Example of granularity being too fine:
-        //    array_length = 10000, innerloop_batch_count = 10, this means we will schedule 1000 work items.
+        //    array_length = 10000, inner_count = 10, this means we will schedule 1000 work items.
         //    If we have 4 worker threads, then each worker thread will have 250 work items to process. Also
         //    the amount of stealing will be high which will lead to a lot of contention.
         // Correction to the example above:
-        //    array_length = 10000, innerloop_batch_count = 100, this means we will schedule 100 work items.
+        //    array_length = 10000, inner_count = 100, this means we will schedule 100 work items.
         //    If we have 4 worker threads, then each worker thread will have 25 work items to process. Now
         //    work items take longer to process and the amount of stealing will be lower which will lead to
         //    less contention.

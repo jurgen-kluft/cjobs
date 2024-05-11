@@ -29,12 +29,12 @@ namespace ncore
         // -----------------------------------------------------------------------------------------------------------------------
         void g_run(system_t* system, ijob_t* job, job_handle_t dependsOn = nullptr);
         void g_run(system_t* system, ijob_t* job, s32 arrayLength, job_handle_t dependsOn = nullptr);
-        void g_run(system_t* system, ijob_t* job, s32 arrayLength, s32 innerloopBatchCount, job_handle_t dependsOn = nullptr);
+        void g_run(system_t* system, ijob_t* job, s32 arrayLength, s32 innerCount, job_handle_t dependsOn = nullptr);
 
         // -----------------------------------------------------------------------------------------------------------------------
         job_handle_t g_schedule_single(system_t* system, ijob_t* job, job_handle_t dependsOn = nullptr);
         job_handle_t g_schedule_single(system_t* system, ijob_t* job, s32 arrayLength, job_handle_t dependsOn = nullptr);
-        job_handle_t g_schedule_parallel(system_t* system, ijob_t* job, s32 arrayLength, s32 innerloopBatchCount, job_handle_t dependsOn = nullptr);
+        job_handle_t g_schedule_parallel(system_t* system, ijob_t* job, s32 arrayLength, s32 innerCount, job_handle_t dependsOn = nullptr);
 
         // Job handle will be set to nullptr and the job will be released or marked as to be released
         bool g_releaseHandle(system_t* system, job_handle_t& handle);
