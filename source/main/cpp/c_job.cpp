@@ -126,43 +126,21 @@ namespace ncore
 
         struct job_t
         {
-            ijob_t*       m_job;
-            s32           m_array_length;
-            s32           m_inner_count;
-            job_handle_t* m_dependency;
-            job_done_t    m_done;
-            s16           m_worker_index; // Worker thread that created this job
+            ijob_t*          m_job;
+            s32              m_array_length;
+            s16              m_inner_count;
+            s16              m_worker_index; // Worker thread that created this job
+            job_handle_t*    m_dependency;
+            job_done_t       m_done;
+            std::atomic<s32> m_index; // Index, begin and end can be calculated from job->m_array_length and job->m_inner_count
         };
 
-        struct work_t
+        struct main_ctx_t;
+
+        struct worker_thread_ctx_t
         {
-            job_t* m_job;
-            s32    m_start;
-            s32    m_end;
-        };
-
-        // For work items, the thing is they are very temporary, once a job is done all of the work
-        // items can be freed. The obvious thing to do is to have a mpmc queue with work items that
-        // can be used to alloc and free. However this will cause obvious contention on the queue.
-
-        // Note: There are moments in the execution that can be used to garbage collect, hmmmmm.
-        //       Maybe we can have the main thread do the garbage collection? But how do we know
-        //       which ranges of work items are done? Should we have a separate queue for jobs that
-        //       are done but need to be garbage collected?
-
-        // Note: If we can make more use of SPSC or even MPSC then we can avoid a lot of contention.
-        //       For example, one specific worker thread will create a job, preferably with memory that
-        //       is local to that worker thread. When any of the workers detect the end of the job it
-        //       will push the job on the 'free' queue of the worker thread that created the job. This
-        //       way we can avoid contention on the 'free' queue of the main thread.
-        //       This does increase the overall memory footprint.
-
-        struct main_context_t;
-
-        struct worker_context_t
-        {
-            main_context_t* m_ctx;
-            s32             m_index;
+            main_ctx_t* m_main_ctx;
+            s32         m_worker_thread_index;
             // semaphore_t m_semaphore; // Semaphore to signal this worker thread
 
             u32            m_max_jobs;        // Maximum number of jobs that can be created by this worker
@@ -171,99 +149,98 @@ namespace ncore
             local_queue_t* m_jobs_new_queue;  // Queue of jobs that need to be processed
             mpsc_queue_t*  m_jobs_done_queue; // These are jobs that are 'done', can be pushed here from any worker thread
             spmc_queue_t*  m_scheduled_work;  // Worker thread work queue
-
-            u32   m_max_work_items; // Maximum number of work items that can be active
-            byte* m_work_item_mem;  // Large enough memory to hold work items for any created job by this worker
         };
 
-        struct main_context_t
+        struct main_ctx_t
         {
-            mpmc_queue_t* m_jobs_free_queue; // This worker can take a new job from this queue and initialize it
-            mpmc_queue_t* m_jobs_new_queue;  // Queue of jobs that need to be processed
-            mpmc_queue_t* m_jobs_done_queue; // These are jobs that are 'done', can be pushed here from any worker thread
-
-            u32               m_max_workers;      // Number of worker threads
-            mpmc_queue_t*     m_inactive_workers; // Worker threads that have no work, queue<s32>
-            worker_context_t* m_worker_contexts;  // Worker thread contexts, worker_context_t[m_max_workers]
+            u32                  m_max_worker_threads;  // Number of worker threads
+            mpmc_queue_t*        m_idle_worker_threads; // Worker threads that have no work, queue<s32>
+            worker_thread_ctx_t* m_worker_thread_ctxs;  // Worker thread contexts, worker_thread_ctx_t[m_max_workers]
+            std::atomic<bool>    m_quit;
         };
 
         // A job will be scheduled as one or many work items depending on how the user wants to schedule it
-        static job_handle_t s_schedule_single(main_context_t* ctx, ijob_t* job)
+        static job_handle_t s_schedule_single(worker_thread_ctx_t* ctx, ijob_t* job)
         {
-            s32 const thread_index = 0; // Which worker thread should we schedule the job on?
+            main_ctx_t* main_ctx = ctx->m_main_ctx;
 
-            job_t* job_item = nullptr;
-            queue_dequeue(ctx->m_jobs_free_queue, &job_item);
+            u64 job_index = 0;
+            queue_dequeue(ctx->m_jobs_free_queue, job_index);
+            job_t* job_item          = ctx->m_jobs + job_index;
             job_item->m_job          = job;
             job_item->m_array_length = 1;
             job_item->m_inner_count  = 1;
             job_item->m_dependency   = nullptr;
             job_item->m_done.init(1);
 
-            // Schedule job as one work item
-            work_t* work = nullptr;
-            queue_dequeue(ctx->m_work_item_queue, &work);
-            work->m_job   = job_item;
-            work->m_start = 0;
-            work->m_end   = 1;
-            queue_enqueue(ctx->m_scheduled_work[thread_index], &work);
+            // Should we enqueue this job on all the worker queues ?
+            // The top u32 of the job_index should be the worker thread index that created this job
+            job_index = (job_index & 0xFFFFFFFF) | (ctx->m_worker_thread_index << 32);
+            queue_enqueue(ctx->m_scheduled_work, job_index);
+
+            // If we have idle worker threads, signal one of them.
+            // When there are no idle worker threads, signal all worker threads.
+
+            // Signal the worker thread that there is work to do
+            // semaphore_signal(ctx->m_semaphore);
 
             return (job_handle_t)job_item;
         }
 
-        static job_handle_t s_schedule_for(main_context_t* ctx, ijob_t* job, s32 array_length)
+        static job_handle_t s_schedule_for(worker_thread_ctx_t* ctx, ijob_t* job, s32 array_length)
         {
             s32 const thread_index = 0; // Which worker thread should we schedule the job on?
 
-            job_t* job_item = nullptr;
-            queue_dequeue(ctx->m_jobs_free_queue, &job_item);
+            main_ctx_t* main_ctx = ctx->m_main_ctx;
+
+            u64 job_index = 0;
+            queue_dequeue(ctx->m_jobs_free_queue, job_index);
+            job_t* job_item          = ctx->m_jobs + job_index;
             job_item->m_job          = job;
-            job_item->m_array_length = array_length;
-            job_item->m_inner_count  = array_length;
+            job_item->m_array_length = 1;
+            job_item->m_inner_count  = 1;
             job_item->m_dependency   = nullptr;
             job_item->m_done.init(1);
 
-            // Schedule job as one work item
-            work_t* work = nullptr;
-            queue_dequeue(ctx->m_work_item_queue, &work);
-            work->m_job   = job_item;
-            work->m_start = 0;
-            work->m_end   = array_length;
-            queue_enqueue(ctx->m_scheduled_work[thread_index], &work);
+            // Should we enqueue this job on all the worker queues ?
+            // The top u32 of the job_index should be the worker thread index that created this job
+            job_index = (job_index & 0xFFFFFFFF) | (ctx->m_worker_thread_index << 32);
+            queue_enqueue(ctx->m_scheduled_work, job_index);
+
+            // If we have idle worker threads, signal one of them.
+            // When there are no idle worker threads, signal all worker threads.
+
+            // Signal the worker thread that there is work to do
+            // semaphore_signal(ctx->m_semaphore);
 
             return (job_handle_t)job_item;
         }
 
-        static job_handle_t s_schedule_parallel(main_context_t* ctx, ijob_t* job, s32 array_length, s32 inner_count)
+        static job_handle_t s_schedule_parallel(worker_thread_ctx_t* ctx, ijob_t* job, s32 array_length, s32 inner_count)
         {
-            s32 const thread_index = 0; // Which worker thread should we schedule the job on?
+            main_ctx_t* main_ctx = ctx->m_main_ctx;
 
-            job_t* job_item = nullptr;
-            queue_dequeue(ctx->m_jobs_free_queue, &job_item);
+            u64 job_index = 0;
+            queue_dequeue(ctx->m_jobs_free_queue, job_index);
+            job_t* job_item          = ctx->m_jobs + job_index;
             job_item->m_job          = job;
-            job_item->m_array_length = array_length;
-            job_item->m_inner_count  = inner_count;
+            job_item->m_array_length = 1;
+            job_item->m_inner_count  = 1;
             job_item->m_dependency   = nullptr;
 
             // Schedule job as N work items
-            s32 const N = (array_length + (inner_count - 1)) / inner_count;
+            s32 const N = main_ctx->m_max_worker_threads;
             job_item->m_done.init(N);
 
-            // Should we round-robin the work items to the 'inactive' workers?
+            // Should we enqueue this job on all the worker queues ?
+            // The top u32 of the job_index should be the worker thread index that created this job
+            job_index = (job_index & 0xFFFFFFFF) | (ctx->m_worker_thread_index << 32);
+            queue_enqueue(ctx->m_scheduled_work, job_index);
 
-            s32 start = 0;
-            while (start < array_length)
+            // Signal all the worker threads that there is work to do
+            for (s32 i = 0; i < main_ctx->m_max_worker_threads; ++i)
             {
-                s32 const end = math::min(start + inner_count, array_length);
-
-                work_t* work = nullptr;
-                queue_dequeue(ctx->m_work_item_queue, &work);
-                work->m_job   = job_item;
-                work->m_start = start;
-                work->m_end   = end;
-                queue_enqueue(ctx->m_scheduled_work[thread_index], &work);
-
-                start = end;
+                // semaphore_signal(main_ctx->m_worker_thread_ctxs[i].m_semaphore);
             }
 
             return (job_handle_t)job_item;
@@ -271,59 +248,53 @@ namespace ncore
 
         struct worker_t
         {
-            main_context_t*   m_main_ctx;
-            worker_context_t* m_worker_ctx;
-            s32               m_index;
+            main_ctx_t*          m_main_ctx;
+            worker_thread_ctx_t* m_worker_ctx;
+            s32                  m_worker_index;
         };
 
         static void s_worker_thread(worker_t* worker)
         {
-            main_context_t*   main_ctx = worker->m_main_ctx;
-            worker_context_t* this_ctx = worker->m_worker_ctx;
-            s32 const         index    = worker->m_index;
+            main_ctx_t*          main_ctx     = worker->m_main_ctx;
+            worker_thread_ctx_t* this_ctx     = worker->m_worker_ctx;
+            s32 const            worker_index = worker->m_worker_index;
 
-            while (true)
+            while (!main_ctx->m_quit.load())
             {
                 // Wait for work
-                work_t* work = nullptr;
-                queue_dequeue(this_ctx->m_scheduled_work, &work);
-
-                if (work == nullptr)
+                u64 work;
+                if (!queue_dequeue(this_ctx->m_scheduled_work, work))
                 {
-                    // No work, steal work from other worker queues
-                    for (s32 i = 0; i < main_ctx->m_max_workers; ++i)
+                    // No work, add this worker to the idle worker threads queue
+                    queue_enqueue(main_ctx->m_idle_worker_threads, worker_index);
+                }
+
+                // Get the job object
+                // Top part of the u64 is the worker index that created the job
+                u32 const job_index = (work >> 32) & 0xFFFFFFFF;
+                job_t*    job       = main_ctx->m_worker_thread_ctxs[job_index].m_jobs + job_index;
+
+                // Keep working this job until it is done
+                while (true)
+                {
+                    s32 const work_index = job->m_index.fetch_add(1);
+
+                    // Compute the begin and end of the work item
+                    s32 const work_range = job->m_array_length / job->m_inner_count;
+                    s32 const work_begin = math::min(work_index * work_range, job->m_array_length);
+                    s32 const work_end   = math::min(work_begin + work_range, job->m_array_length);
+
+                    // Make sure that this index is within range
+                    if (work_begin < work_end)
                     {
-                        if (i == index)
-                            continue;
-                        worker_context_t* other_worker_ctx = &main_ctx->m_worker_contexts[i];
-                        if (queue_dequeue(other_worker_ctx->m_scheduled_work, &work))
-                            break;
+                        job->m_job->execute(work_begin, work_end); // Execute this work range
+                    }
+                    else
+                    {
+                        job->m_done.done(); // Mark the job as done
+                        break;              // This job is done, move on to the next job
                     }
                 }
-
-                if (work == nullptr)
-                {
-                    // No work, find a job
-                    continue;
-                }
-
-                // The job that work is part of
-                job_t* job = work->m_job;
-
-                // Execute work
-                job->m_job->execute(work->m_start, work->m_end);
-
-                if (job->m_done.done())
-                {
-                    // Job is done, return it to the worker that created it
-                    s32 const worker_index = job->m_worker_index;
-                    queue_enqueue(main_ctx->m_worker_contexts[worker_index].m_jobs_done_queue, &job);
-                }
-
-                // Return work item ?
-                // The whole range of work items can be release once this job itself is done
-                // So no need to actually free work items like this
-                // queue_enqueue(main_ctx->m_work_item_queue, &work);
             }
         }
 

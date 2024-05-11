@@ -45,10 +45,10 @@ namespace ncore
             void push(u64 item) noexcept
             {
                 auto const head = m_producer.m_index.fetch_add(1);
-                auto&      slot = *(m_producer.m_slots + m_producer.idx(head));
-                while (m_producer.turn(head) * 2 != slot.turn.load(std::memory_order_acquire)) {}
-                slot.item = item;
-                slot.turn.store(m_producer.turn(head) * 2 + 1, std::memory_order_release);
+                slot_t*    slot = m_producer.m_slots + m_producer.idx(head);
+                while (m_producer.turn(head) * 2 != slot->turn.load(std::memory_order_acquire)) {}
+                slot->item = item;
+                slot->turn.store(m_producer.turn(head) * 2 + 1, std::memory_order_release);
             }
 
             bool try_push(u64 item) noexcept
@@ -56,14 +56,14 @@ namespace ncore
                 auto head = m_producer.m_index.load(std::memory_order_acquire);
                 for (;;)
                 {
-                    auto& slot = *((slot_t*)(m_producer.m_slots + (m_producer.idx(head) * c_item_size)));
+                    slot_t* slot = m_producer.m_slots + m_producer.idx(head);
 
-                    if (m_producer.turn(head) * 2 == slot.turn.load(std::memory_order_acquire))
+                    if (m_producer.turn(head) * 2 == slot->turn.load(std::memory_order_acquire))
                     {
                         if (m_producer.m_index.compare_exchange_strong(head, head + 1))
                         {
-                            slot.item = item;
-                            slot.turn.store(m_producer.turn(head) * 2 + 1, std::memory_order_release);
+                            slot->item = item;
+                            slot->turn.store(m_producer.turn(head) * 2 + 1, std::memory_order_release);
                             return true;
                         }
                     }
@@ -82,10 +82,10 @@ namespace ncore
             void pop(u64& item) noexcept
             {
                 auto const tail = m_consumer.m_index.fetch_add(1);
-                auto&      slot = *(m_consumer.m_slots + m_consumer.idx(tail));
-                while (m_consumer.turn(tail) * 2 + 1 != slot.turn.load(std::memory_order_acquire)) {}
-                item = slot.item;
-                slot.turn.store(m_consumer.turn(tail) * 2 + 2, std::memory_order_release);
+                slot_t*    slot = m_consumer.m_slots + m_consumer.idx(tail);
+                while (m_consumer.turn(tail) * 2 + 1 != slot->turn.load(std::memory_order_acquire)) {}
+                item = slot->item;
+                slot->turn.store(m_consumer.turn(tail) * 2 + 2, std::memory_order_release);
             }
 
             bool try_pop(u64& item) noexcept
@@ -93,13 +93,13 @@ namespace ncore
                 auto tail = m_consumer.m_index.load(std::memory_order_acquire);
                 for (;;)
                 {
-                    auto& slot = *(m_consumer.m_slots + m_consumer.idx(tail));
-                    if (m_consumer.turn(tail) * 2 + 1 == slot.turn.load(std::memory_order_acquire))
+                    slot_t* slot = m_consumer.m_slots + m_consumer.idx(tail);
+                    if (m_consumer.turn(tail) * 2 + 1 == slot->turn.load(std::memory_order_acquire))
                     {
                         if (m_consumer.m_index.compare_exchange_strong(tail, tail + 1))
                         {
-                            item = slot.item;
-                            slot.turn.store(m_consumer.turn(tail) * 2 + 2, std::memory_order_release);
+                            item = slot->item;
+                            slot->turn.store(m_consumer.turn(tail) * 2 + 2, std::memory_order_release);
                             return true;
                         }
                     }
@@ -151,9 +151,9 @@ namespace ncore
         void*     mem        = allocator->allocate(sizeof(mpmc::queue_t) + array_size, mpmc::c_cacheline_size);
         if (mem == nullptr)
             return nullptr;
-        mpmc::slot_t*  array_data = (mpmc::slot_t*)((byte*)mem + sizeof(mpmc::queue_t));
+        mpmc::slot_t* array_data = (mpmc::slot_t*)((byte*)mem + sizeof(mpmc::queue_t));
         ASSERTS(math::isAligned((int_t)array_data, mpmc::c_cacheline_size), "array must be aligned to cache line boundary to prevent false sharing");
-        mpmc::queue_t* queue      = new (mem) mpmc::queue_t(array_data, array_size);
+        mpmc::queue_t* queue = new (mem) mpmc::queue_t(array_data, array_size);
         return (mpmc_queue_t*)queue;
     }
 
