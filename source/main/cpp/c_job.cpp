@@ -40,8 +40,8 @@ namespace ncore
 
         struct job_done_t
         {
-            std::atomic<s32>   m_done_count;
             autoreset_event_t* m_event;
+            std::atomic<s32>   m_done_count;
 
             // Windows: This should be a WaitHandle[] of AutoResetEvents
             // Mac:
