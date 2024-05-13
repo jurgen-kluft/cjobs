@@ -2,7 +2,7 @@
 #include "cbase/c_allocator.h"
 #include "cbase/c_integer.h"
 
-#include "cjobs/private/c_done_event.h"
+#include "cjobs/private/c_signal.h"
 
 #include <atomic>
 
@@ -24,10 +24,7 @@
 
 namespace ncore
 {
-    //---------------------------------------------------------
-    // __done_event_t
-    //---------------------------------------------------------
-    class __done_event_t
+    class __signal_t
     {
     public:
         // m_status == 1: Event object is signaled.
@@ -65,7 +62,7 @@ namespace ncore
 
         void reset() { m_status.store(0, std::memory_order_relaxed); }
 
-        void signal()
+        bool signal()
         {
             s32 const previousStatus = m_status.fetch_or(1, std::memory_order_relaxed);
             if ((previousStatus & 2) == 2)
@@ -76,8 +73,12 @@ namespace ncore
 #ifdef TARGET_MAC
                 semaphore_signal_all(m_sema);
 #endif
+                return true;
             }
+            return false;
         }
+
+        bool is_signaled() const { return (m_status.load(std::memory_order_relaxed) & 1) == 1; }
 
         void wait()
         {
@@ -96,36 +97,42 @@ namespace ncore
         DCORE_CLASS_PLACEMENT_NEW_DELETE
     };
 
-    void create_event_done(alloc_t* allocator, event_done_t*& event)
+    void signal_create(alloc_t* allocator, signal_t*& event)
     {
-        __done_event_t* e = allocator->construct<__done_event_t>();
+        __signal_t* e = allocator->construct<__signal_t>();
         e->init();
-        event = (event_done_t*)e;
+        event = (signal_t*)e;
     }
 
-    void destroy_event_done(alloc_t* allocator, event_done_t* event)
+    void signal_destroy(alloc_t* allocator, signal_t* event)
     {
-        __done_event_t* e = (__done_event_t*)event;
+        __signal_t* e = (__signal_t*)event;
         e->release();
         allocator->deallocate(e);
     }
 
-    void wait_event_done(event_done_t* event)
+    void signal_wait(signal_t* event)
     {
-        __done_event_t* e = (__done_event_t*)event;
+        __signal_t* e = (__signal_t*)event;
         e->wait();
     }
 
-    void signal_event_done(event_done_t* event, s32 count)
+    bool signal_set(signal_t* event)
     {
-        __done_event_t* e = (__done_event_t*)event;
-        e->signal();
+        __signal_t* e = (__signal_t*)event;
+        return e->signal();
     }
 
-    void reset_event_done(event_done_t* event)
+    void signal_reset(signal_t* event)
     {
-        __done_event_t* e = (__done_event_t*)event;
+        __signal_t* e = (__signal_t*)event;
         e->reset();
+    }
+
+    bool signal_isset(signal_t* event)
+    {
+        __signal_t* e = (__signal_t*)event;
+        return e->is_signaled();
     }
 
 } // namespace ncore

@@ -4,7 +4,7 @@
 
 #include "cjobs/c_queue.h"
 #include "cjobs/c_job.h"
-#include "cjobs/private/c_done_event.h"
+#include "cjobs/private/c_signal.h"
 
 #include <atomic>
 
@@ -22,41 +22,16 @@ namespace ncore
 {
     namespace njob
     {
-        enum EScheduleMode
-        {
-            Single   = 0,
-            Parallel = 1,
-            Run      = 2,
-        };
-
-        enum EJobType
-        {
-            Single      = 0,
-            ParallelFor = 1
-        };
-
         struct job_done_t
         {
-            event_done_t*    m_event;
-            std::atomic<s32> m_done_count;
+            signal_t* m_signal;
 
-            // Windows: This should be a WaitHandle[] of AutoResetEvents
-            // Mac:
-            inline void create(alloc_t* allocator)
-            {
-                create_event_done(allocator, m_event);
-                m_done_count.store(0);
-            }
-
-            inline void init(s32 count)
-            {
-                m_done_count.store(count);
-            }
-
-            inline bool done() { signal_event_done(m_event); }
-            inline void exit(alloc_t* allocator) { destroy_event_done(allocator, m_event); }
-            inline bool is_done() const { return m_done_count.load() == 0; }
-            inline void wait_done() { wait_event_done(m_event); }
+            inline void create(alloc_t* allocator) { signal_create(allocator, m_signal); }
+            inline void exit(alloc_t* allocator) { signal_destroy(allocator, m_signal); }
+            inline void reset() { signal_reset(m_signal); }
+            inline bool set_done() { return signal_set(m_signal); }
+            inline bool is_done() const { return signal_isset(m_signal); }
+            inline void wait_until_done() { signal_wait(m_signal); }
         };
 
         struct job_t
@@ -106,10 +81,10 @@ namespace ncore
             job_item->m_array_length = 1;
             job_item->m_inner_count  = 1;
             job_item->m_dependency   = nullptr;
-            job_item->m_done.init(1);
+            job_item->m_done.reset();
 
             // Should we enqueue this job on all the worker queues ?
-            // The top u32 of the job_index should be the worker thread index that created this job, 
+            // The top u32 of the job_index should be the worker thread index that created this job,
             // the bottom 32 bits should be the job index.
             job_index = (job_index & 0xFFFFFFFF) | (ctx->m_worker_thread_index << 32);
             queue_enqueue(ctx->m_scheduled_work, job_index);
@@ -118,7 +93,7 @@ namespace ncore
             // If we have idle worker threads, signal one of them.
             // When there are no idle worker threads, signal all worker threads.
 
-             return (job_handle_t)job_item;
+            return (job_handle_t)job_item;
         }
 
         static job_handle_t s_schedule_for(worker_thread_ctx_t* ctx, ijob_t* job, s32 array_length)
@@ -134,7 +109,7 @@ namespace ncore
             job_item->m_array_length = 1;
             job_item->m_inner_count  = 1;
             job_item->m_dependency   = nullptr;
-            job_item->m_done.init(1);
+            job_item->m_done.reset();
 
             // Should we enqueue this job on all the worker queues ?
             // The top u32 of the job_index should be the worker thread index that created this job
@@ -159,10 +134,7 @@ namespace ncore
             job_item->m_array_length = 1;
             job_item->m_inner_count  = 1;
             job_item->m_dependency   = nullptr;
-
-            // Schedule job as N work items
-            s32 const N = main_ctx->m_max_worker_threads;
-            job_item->m_done.init(N);
+            job_item->m_done.reset();
 
             // Should we enqueue this job on all the worker queues ?
             // The top u32 of the job_index should be the worker thread index that created this job
@@ -204,8 +176,9 @@ namespace ncore
 
                 // Get the job object
                 // Top part of the u64 is the worker index that created the job
-                u32 const job_index = (work >> 32) & 0xFFFFFFFF;
-                job_t*    job       = main_ctx->m_worker_thread_ctxs[job_index].m_jobs + job_index;
+                u32 const job_index   = work & 0xFFFFFFFF;
+                u32 const owner_index = (work >> 32) & 0xFFFFFFFF;
+                job_t*    job         = main_ctx->m_worker_thread_ctxs[job_index].m_jobs + job_index;
 
                 // Keep working this job until it is done
                 while (true)
@@ -224,8 +197,13 @@ namespace ncore
                     }
                     else
                     {
-                        job->m_done.done(); // Mark the job as done
-                        break;              // This job is done, move on to the next job
+                        if (job->m_done.set_done()) // Mark the job as done
+                        {
+                            // We where the first to mark this job as done, so we can push it to the done queue
+                            // of the worker thread that created this job (owner_index)
+                            queue_enqueue(main_ctx->m_worker_thread_ctxs[owner_index].m_jobs_done_queue, job_index);
+                        }
+                        break; // This job is done, move on to the next job
                     }
                 }
             }
@@ -233,8 +211,8 @@ namespace ncore
 
         // Example of granularity being too fine:
         //    array_length = 10000, inner_count = 10, this means we will schedule 1000 work items.
-        //    If we have 4 worker threads, then each worker thread will have 250 work items to process. Also
-        //    the amount of stealing will be high which will lead to a lot of contention.
+        //    If we have 4 worker threads, then each worker thread will have 250 work items to process.
+        //    Furthermore the amount of stealing will be high which will lead to a lot of contention.
         // Correction to the example above:
         //    array_length = 10000, inner_count = 100, this means we will schedule 100 work items.
         //    If we have 4 worker threads, then each worker thread will have 25 work items to process. Now
@@ -245,7 +223,6 @@ namespace ncore
         // What about sync points, perhaps this is just a special empty job ?
 
         // Job handle can point directly to job_t
-
 
     } // namespace njob
 } // namespace ncore
