@@ -22,42 +22,38 @@ namespace ncore
 {
     namespace njob
     {
-        struct job_done_t
-        {
-            signal_t*        m_signal;
-            std::atomic<s32> m_count;
-
-            inline void create(alloc_t* allocator) { signal_create(allocator, m_signal); }
-            inline void exit(alloc_t* allocator) { signal_destroy(allocator, m_signal); }
-            inline void reset(s32 N)
-            {
-                m_count.store(N);
-                signal_reset(m_signal);
-            }
-            inline bool set_done()
-            {
-                s32 const prevCount = m_count.fetch_sub(1);
-                if (prevCount == 1)
-                {
-                    signal_set(m_signal);
-                    return true;
-                }
-                return false;
-            }
-            inline bool is_done() const { return m_count.load() == 0; }
-            inline void wait_until_done() { signal_wait(m_signal); }
-        };
-
         struct job_t
         {
-            ijob_t*          m_job;
-            s32              m_array_length;
-            s16              m_inner_count;
-            s16              m_worker_index; // Worker thread that created this job
-            job_handle_t*    m_dependency;
-            job_done_t       m_done;
-            std::atomic<s32> m_index; // Index, begin and end can be calculated from job->m_array_length and job->m_inner_count
+            ijob_t*          m_job;              // Job to execute (user)
+            s32              m_total_iter_count; // Total loop iteration count
+            s16              m_inner_iter_count; // Inner loop iteration count
+            s16              m_worker_index;     // Worker thread that created this job
+            job_t*           m_dependency;       // Job that needs to be done before this job can be executed
+            signal_t*        m_signal;           // Signal to wait on when this job is not done
+            std::atomic<s32> m_count;            // Number of work items that are not done
+            std::atomic<s32> m_index;            // Index, begin and end can be calculated from job->m_total_iter_count and job->m_inner_iter_count
+            void*            m_dummy[3];         // Padding to make sure that this struct is cacheline aligned
         };
+
+        inline static void s_create(job_t* job, alloc_t* allocator) { signal_create(allocator, job->m_signal); }
+        inline static void s_exit(job_t* job, alloc_t* allocator) { signal_destroy(allocator, job->m_signal); }
+        inline static void s_reset(job_t* job, s32 N)
+        {
+            job->m_count.store(N);
+            signal_reset(job->m_signal);
+        }
+        inline static bool s_set_done(job_t* job)
+        {
+            s32 const prevCount = job->m_count.fetch_sub(1);
+            if (prevCount == 1)
+            {
+                signal_set(job->m_signal);
+                return true;
+            }
+            return false;
+        }
+        inline static bool s_is_done(job_t* job) { return job->m_count.load() == 0; }
+        inline static void s_wait_until_done(job_t* job) { signal_wait(job->m_signal); }
 
         struct main_ctx_t;
 
@@ -90,12 +86,12 @@ namespace ncore
 
             u64 job_index = 0;
             queue_dequeue(ctx->m_jobs_free_queue, job_index);
-            job_t* job_item          = ctx->m_jobs + job_index;
-            job_item->m_job          = job;
-            job_item->m_array_length = 1;
-            job_item->m_inner_count  = 1;
-            job_item->m_dependency   = nullptr;
-            job_item->m_done.reset(1);
+            job_t* job_item              = ctx->m_jobs + job_index;
+            job_item->m_job              = job;
+            job_item->m_total_iter_count = 1;
+            job_item->m_inner_iter_count = 1;
+            job_item->m_dependency       = nullptr;
+            s_reset(job_item, 1);
 
             // Should we enqueue this job on all the worker queues ?
             // The top u32 of the job_index should be the worker thread index that created this job,
@@ -118,12 +114,12 @@ namespace ncore
 
             u64 job_index = 0;
             queue_dequeue(ctx->m_jobs_free_queue, job_index);
-            job_t* job_item          = ctx->m_jobs + job_index;
-            job_item->m_job          = job;
-            job_item->m_array_length = 1;
-            job_item->m_inner_count  = 1;
-            job_item->m_dependency   = nullptr;
-            job_item->m_done.reset(1);
+            job_t* job_item              = ctx->m_jobs + job_index;
+            job_item->m_job              = job;
+            job_item->m_total_iter_count = 1;
+            job_item->m_inner_iter_count = 1;
+            job_item->m_dependency       = nullptr;
+            s_reset(job_item, 1);
 
             // Should we enqueue this job on all the worker queues ?
             // The top u32 of the job_index should be the worker thread index that created this job
@@ -143,14 +139,14 @@ namespace ncore
 
             u64 job_index = 0;
             queue_dequeue(ctx->m_jobs_free_queue, job_index);
-            job_t* job_item          = ctx->m_jobs + job_index;
-            job_item->m_job          = job;
-            job_item->m_array_length = 1;
-            job_item->m_inner_count  = 1;
-            job_item->m_dependency   = nullptr;
+            job_t* job_item              = ctx->m_jobs + job_index;
+            job_item->m_job              = job;
+            job_item->m_total_iter_count = 1;
+            job_item->m_inner_iter_count = 1;
+            job_item->m_dependency       = nullptr;
 
             s32 const N = (array_length + inner_count - 1) / inner_count;
-            job_item->m_done.reset(N);
+            s_reset(job_item, N);
 
             // Should we enqueue this job on all the worker queues ?
             // The top u32 of the job_index should be the worker thread index that created this job
@@ -202,9 +198,9 @@ namespace ncore
                     s32 const work_index = job->m_index.fetch_add(1);
 
                     // Compute the begin and end of the work item
-                    s32 const work_range = job->m_array_length / job->m_inner_count;
-                    s32 const work_begin = math::min(work_index * work_range, job->m_array_length);
-                    s32 const work_end   = math::min(work_begin + work_range, job->m_array_length);
+                    s32 const work_range = job->m_total_iter_count / job->m_inner_iter_count;
+                    s32 const work_begin = math::min(work_index * work_range, job->m_total_iter_count);
+                    s32 const work_end   = math::min(work_begin + work_range, job->m_total_iter_count);
 
                     // Make sure that this index is within range
                     if (work_begin < work_end)
@@ -213,7 +209,7 @@ namespace ncore
                     }
                     else
                     {
-                        if (job->m_done.set_done()) // Mark the job as done
+                        if (s_set_done(job)) // Mark the job as done
                         {
                             // We where the first to mark this job as done, so we can push it to the done queue
                             // of the worker thread that created this job (owner_index)
