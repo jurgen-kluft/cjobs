@@ -3,8 +3,8 @@
 #include "cbase/c_integer.h"
 
 #include "cjobs/c_queue.h"
-#include "cjobs/c_auto_reset_event.h"
 #include "cjobs/c_job.h"
+#include "cjobs/private/c_done_event.h"
 
 #include <atomic>
 
@@ -22,9 +22,6 @@ namespace ncore
 {
     namespace njob
     {
-        // Use std::thread
-        // https://en.cppreference.com/w/cpp/thread
-
         enum EScheduleMode
         {
             Single   = 0,
@@ -40,25 +37,26 @@ namespace ncore
 
         struct job_done_t
         {
-            autoreset_event_t* m_event;
-            std::atomic<s32>   m_done_count;
+            event_done_t*    m_event;
+            std::atomic<s32> m_done_count;
 
             // Windows: This should be a WaitHandle[] of AutoResetEvents
             // Mac:
-
-            inline void init(alloc_t* allocator)
+            inline void create(alloc_t* allocator)
             {
-                create_event(allocator, m_event, count);
+                create_event_done(allocator, m_event);
+                m_done_count.store(0);
+            }
+
+            inline void init(s32 count)
+            {
                 m_done_count.store(count);
             }
 
-            inline bool done()
-            {
-                signal_event(m_event);
-            }
-            inline void exit(alloc_t* allocator) { destroy_event(allocator, m_event); }
+            inline bool done() { signal_event_done(m_event); }
+            inline void exit(alloc_t* allocator) { destroy_event_done(allocator, m_event); }
             inline bool is_done() const { return m_done_count.load() == 0; }
-            inline void wait_done() { wait_event(m_event); }
+            inline void wait_done() { wait_event_done(m_event); }
         };
 
         struct job_t
@@ -108,20 +106,19 @@ namespace ncore
             job_item->m_array_length = 1;
             job_item->m_inner_count  = 1;
             job_item->m_dependency   = nullptr;
-            job_item->m_done.init();
+            job_item->m_done.init(1);
 
             // Should we enqueue this job on all the worker queues ?
-            // The top u32 of the job_index should be the worker thread index that created this job
+            // The top u32 of the job_index should be the worker thread index that created this job, 
+            // the bottom 32 bits should be the job index.
             job_index = (job_index & 0xFFFFFFFF) | (ctx->m_worker_thread_index << 32);
             queue_enqueue(ctx->m_scheduled_work, job_index);
 
+            // TODO
             // If we have idle worker threads, signal one of them.
             // When there are no idle worker threads, signal all worker threads.
 
-            // Signal the worker thread that there is work to do
-            // semaphore_signal(ctx->m_semaphore);
-
-            return (job_handle_t)job_item;
+             return (job_handle_t)job_item;
         }
 
         static job_handle_t s_schedule_for(worker_thread_ctx_t* ctx, ijob_t* job, s32 array_length)
@@ -144,11 +141,9 @@ namespace ncore
             job_index = (job_index & 0xFFFFFFFF) | (ctx->m_worker_thread_index << 32);
             queue_enqueue(ctx->m_scheduled_work, job_index);
 
+            // TODO
             // If we have idle worker threads, signal one of them.
             // When there are no idle worker threads, signal all worker threads.
-
-            // Signal the worker thread that there is work to do
-            // semaphore_signal(ctx->m_semaphore);
 
             return (job_handle_t)job_item;
         }
@@ -174,6 +169,7 @@ namespace ncore
             job_index = (job_index & 0xFFFFFFFF) | (ctx->m_worker_thread_index << 32);
             queue_enqueue(ctx->m_scheduled_work, job_index);
 
+            // TODO
             // Signal all the worker threads that there is work to do
             for (s32 i = 0; i < main_ctx->m_max_worker_threads; ++i)
             {
@@ -246,11 +242,10 @@ namespace ncore
         //    less contention.
 
         // How to handle dependencies and wait ?
+        // What about sync points, perhaps this is just a special empty job ?
 
-        // What about sync points ?
+        // Job handle can point directly to job_t
 
-        // Job handles can point to a struct that contains the job info, 'atomic<bool> finished' and its dependencies
-        // WaitForAll(job_handle_t* jobs, int count) means that we look at the job handle and check if the job is done
 
     } // namespace njob
 } // namespace ncore
