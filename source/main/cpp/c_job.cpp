@@ -24,13 +24,27 @@ namespace ncore
     {
         struct job_done_t
         {
-            signal_t* m_signal;
+            signal_t*        m_signal;
+            std::atomic<s32> m_count;
 
             inline void create(alloc_t* allocator) { signal_create(allocator, m_signal); }
             inline void exit(alloc_t* allocator) { signal_destroy(allocator, m_signal); }
-            inline void reset() { signal_reset(m_signal); }
-            inline bool set_done() { return signal_set(m_signal); }
-            inline bool is_done() const { return signal_isset(m_signal); }
+            inline void reset(s32 N)
+            {
+                m_count.store(N);
+                signal_reset(m_signal);
+            }
+            inline bool set_done()
+            {
+                s32 const prevCount = m_count.fetch_sub(1);
+                if (prevCount == 1)
+                {
+                    signal_set(m_signal);
+                    return true;
+                }
+                return false;
+            }
+            inline bool is_done() const { return m_count.load() == 0; }
             inline void wait_until_done() { signal_wait(m_signal); }
         };
 
@@ -81,7 +95,7 @@ namespace ncore
             job_item->m_array_length = 1;
             job_item->m_inner_count  = 1;
             job_item->m_dependency   = nullptr;
-            job_item->m_done.reset();
+            job_item->m_done.reset(1);
 
             // Should we enqueue this job on all the worker queues ?
             // The top u32 of the job_index should be the worker thread index that created this job,
@@ -109,7 +123,7 @@ namespace ncore
             job_item->m_array_length = 1;
             job_item->m_inner_count  = 1;
             job_item->m_dependency   = nullptr;
-            job_item->m_done.reset();
+            job_item->m_done.reset(1);
 
             // Should we enqueue this job on all the worker queues ?
             // The top u32 of the job_index should be the worker thread index that created this job
@@ -134,7 +148,9 @@ namespace ncore
             job_item->m_array_length = 1;
             job_item->m_inner_count  = 1;
             job_item->m_dependency   = nullptr;
-            job_item->m_done.reset();
+
+            s32 const N = (array_length + inner_count - 1) / inner_count;
+            job_item->m_done.reset(N);
 
             // Should we enqueue this job on all the worker queues ?
             // The top u32 of the job_index should be the worker thread index that created this job
