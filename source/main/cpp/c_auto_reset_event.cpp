@@ -213,9 +213,9 @@ namespace ncore
     };
 
     //---------------------------------------------------------
-    // autoresetevent_t
+    // __done_event_t
     //---------------------------------------------------------
-    class autoresetevent_t
+    class __done_event_t
     {
     public:
         // m_status == 1: Event object is signaled.
@@ -233,27 +233,24 @@ namespace ncore
 
         void release() { m_sema.release(); }
 
+        void reset() 
+        {
+            m_status.store(0, std::memory_order_relaxed);
+        }
+
         void signal()
         {
-            s32 oldStatus = m_status.load(std::memory_order_relaxed);
-            for (;;) // Increment m_status atomically via CAS loop.
+            s32 const status = m_status.fetch_or(1, std::memory_order_relaxed);
+            if ((status & 2) == 2)
             {
-                ASSERT(oldStatus <= 1);
-                s32 const newStatus = oldStatus < 1 ? oldStatus + 1 : 1;
-                if (m_status.compare_exchange_weak(oldStatus, newStatus, std::memory_order_release, std::memory_order_relaxed))
-                    break;
-                // The compare-exchange failed, likely because another thread changed m_status.
-                // oldStatus has been updated. Retry the CAS loop.
+                m_sema.signal_all(); // Release all waiting threads.
             }
-            if (oldStatus < 0)
-                m_sema.signal(); // Release one waiting thread.
         }
 
         void wait()
         {
-            s32 const oldStatus = m_status.fetch_sub(1, std::memory_order_acquire);
-            ASSERT(oldStatus <= 1);
-            if (oldStatus < 1)
+            s32 const status = m_status.fetch_or(2, std::memory_order_acquire);
+            if (status == 0)
             {
                 m_sema.wait();
             }
@@ -262,30 +259,36 @@ namespace ncore
         DCORE_CLASS_PLACEMENT_NEW_DELETE
     };
 
-    void create(alloc_t* allocator, autoreset_event_t*& event, s32 initialCount)
+    void create_event_done(alloc_t* allocator, event_done_t*& event)
     {
-        autoresetevent_t* e = allocator->construct<autoresetevent_t>();
-        e->init(initialCount);
-        event = (autoreset_event_t*)e;
+        __done_event_t* e = allocator->construct<__done_event_t>();
+        e->init();
+        event = (event_done_t*)e;
     }
 
-    void destroy(alloc_t* allocator, autoreset_event_t* event)
+    void destroy_event_done(alloc_t* allocator, event_done_t* event)
     {
-        autoresetevent_t* e = (autoresetevent_t*)event;
+        __done_event_t* e = (__done_event_t*)event;
         e->release();
         allocator->deallocate(e);
     }
 
-    void wait(autoreset_event_t* event)
+    void wait_event_done(event_done_t* event)
     {
-        autoresetevent_t* e = (autoresetevent_t*)event;
+        __done_event_t* e = (__done_event_t*)event;
         e->wait();
     }
 
-    void signal(autoreset_event_t* event, s32 count)
+    void signal_event_done(event_done_t* event, s32 count)
     {
-        autoresetevent_t* e = (autoresetevent_t*)event;
+        __done_event_t* e = (__done_event_t*)event;
         e->signal();
+    }
+
+    void reset_event_done(event_done_t* event)
+    {
+        __done_event_t* e = (__done_event_t*)event;
+        e->reset();
     }
 
 } // namespace ncore

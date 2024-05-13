@@ -9,13 +9,13 @@ namespace ncore
 {
     class alloc_t;
 
-    struct autoreset_event_t;
+    struct event_done_t;
 
-    void create(alloc_t* allocator, autoreset_event_t*& event, s32 initialCount = 0);
-    void destroy(alloc_t* allocator, autoreset_event_t* event);
+    void create_event_done(alloc_t* allocator, event_done_t*& event);
+    void destroy_event_done(alloc_t* allocator, event_done_t* event);
 
-    void wait(autoreset_event_t* event);
-    void signal(autoreset_event_t* event, s32 count = 1);
+    void wait_event_done(event_done_t* event);
+    void signal_event_done(event_done_t* event, s32 count = 1);
 
 } // namespace ncore
 

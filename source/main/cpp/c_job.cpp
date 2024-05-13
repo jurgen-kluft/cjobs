@@ -46,24 +46,19 @@ namespace ncore
             // Windows: This should be a WaitHandle[] of AutoResetEvents
             // Mac:
 
-            inline void init(alloc_t* allocator, s32 count)
+            inline void init(alloc_t* allocator)
             {
-                create(allocator, m_event, count);
+                create_event(allocator, m_event, count);
                 m_done_count.store(count);
             }
+
             inline bool done()
             {
-                s32 const done = m_done_count.fetch_sub(1);
-                if (done == 0)
-                {
-                    signal(m_event);
-                    return true;
-                }
-                return false;
+                signal_event(m_event);
             }
-            inline void exit(alloc_t* allocator) { destroy(allocator, m_event); }
+            inline void exit(alloc_t* allocator) { destroy_event(allocator, m_event); }
             inline bool is_done() const { return m_done_count.load() == 0; }
-            inline void wait_done() { wait(m_event); }
+            inline void wait_done() { wait_event(m_event); }
         };
 
         struct job_t
@@ -113,7 +108,7 @@ namespace ncore
             job_item->m_array_length = 1;
             job_item->m_inner_count  = 1;
             job_item->m_dependency   = nullptr;
-            job_item->m_done.init(1);
+            job_item->m_done.init();
 
             // Should we enqueue this job on all the worker queues ?
             // The top u32 of the job_index should be the worker thread index that created this job
