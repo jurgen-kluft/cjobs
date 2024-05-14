@@ -35,12 +35,24 @@ namespace ncore
             void*            m_dummy[3];         // Padding to make sure that this struct is cacheline aligned
         };
 
-        struct system_t 
+        struct system_t
         {
             u32                  m_max_worker_threads;  // Number of worker threads
             mpmc_queue_t*        m_idle_worker_threads; // Worker threads that have no work, queue<s32>
             worker_thread_ctx_t* m_worker_thread_ctxs;  // Worker thread contexts, worker_thread_ctx_t[m_max_workers]
             std::atomic<bool>    m_quit;
+        };
+
+        struct worker_thread_ctx_t
+        {
+            system_t*      m_main_ctx;            //
+            s32            m_worker_thread_index; //
+            u32            m_max_jobs;            // Maximum number of jobs that can be created by this worker
+            job_t*         m_jobs;                // Array of jobs, job_t[m_max_jobs]
+            local_queue_t* m_jobs_free_queue;     // This worker can take a new job from this queue and initialize it
+            local_queue_t* m_jobs_new_queue;      // Queue of jobs that need to be processed
+            mpsc_queue_t*  m_jobs_done_queue;     // These are jobs that are 'done', can be pushed here from any worker thread
+            spmc_queue_t*  m_scheduled_work;      // Worker thread work queue
         };
 
         void g_create(alloc_t* allocator, system_t*& system, s32 threadCount)
@@ -97,22 +109,6 @@ namespace ncore
         }
         inline static bool s_job_is_done(job_t* job) { return job->m_count.load() == 0; }
         inline static void s_job_wait_until_done(job_t* job) { signal_wait(job->m_signal); }
-
-        struct system_t;
-
-        struct worker_thread_ctx_t
-        {
-            system_t* m_main_ctx;
-            s32         m_worker_thread_index;
-            // semaphore_t m_semaphore; // Semaphore to signal this worker thread
-
-            u32            m_max_jobs;        // Maximum number of jobs that can be created by this worker
-            job_t*         m_jobs;            // Array of jobs, job_t[m_max_jobs]
-            local_queue_t* m_jobs_free_queue; // This worker can take a new job from this queue and initialize it
-            local_queue_t* m_jobs_new_queue;  // Queue of jobs that need to be processed
-            mpsc_queue_t*  m_jobs_done_queue; // These are jobs that are 'done', can be pushed here from any worker thread
-            spmc_queue_t*  m_scheduled_work;  // Worker thread work queue
-        };
 
         // A job will be scheduled as one or many work items depending on how the user wants to schedule it
         static job_handle_t s_schedule_single(worker_thread_ctx_t* ctx, ijob_t* job)
@@ -200,14 +196,14 @@ namespace ncore
 
         struct worker_t
         {
-            system_t*          m_main_ctx;
+            system_t*            m_main_ctx;
             worker_thread_ctx_t* m_worker_ctx;
             s32                  m_worker_index;
         };
 
         static void s_worker_thread(worker_t* worker)
         {
-            system_t*          main_ctx     = worker->m_main_ctx;
+            system_t*            main_ctx     = worker->m_main_ctx;
             worker_thread_ctx_t* this_ctx     = worker->m_worker_ctx;
             s32 const            worker_index = worker->m_worker_index;
 
