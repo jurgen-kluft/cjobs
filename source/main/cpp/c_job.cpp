@@ -77,9 +77,6 @@ namespace ncore
                 ctx->m_scheduled_work      = spmc_queue_create(allocator, ctx->m_max_jobs);
             }
 
-            // Create idle worker threads queue
-            system->m_idle_worker_threads = mpmc_queue_create(allocator, threadCount);
-
             // Start worker threads
             for (s32 i = 0; i < threadCount; ++i)
             {
@@ -218,9 +215,9 @@ namespace ncore
                 u64 work;
                 if (!queue_dequeue(this_ctx->m_scheduled_work, work))
                 {
-                    // No work, add this worker to the idle worker threads queue
-                    queue_enqueue(main_ctx->m_idle_worker_threads, worker_index);
-                    // Note: Should wait on a semaphore here
+                    this_ctx->m_idle.fetch_or(1);   // No work, mark this worker as idle
+                    signal_wait(this_ctx->m_signal); // Note: Should wait on a semaphore here
+                    continue;
                 }
 
                 // Get the job object
