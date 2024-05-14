@@ -37,22 +37,23 @@ namespace ncore
 
         struct system_t
         {
-            u32                  m_max_worker_threads;  // Number of worker threads
-            mpmc_queue_t*        m_idle_worker_threads; // Worker threads that have no work, queue<s32>
-            worker_thread_ctx_t* m_worker_thread_ctxs;  // Worker thread contexts, worker_thread_ctx_t[m_max_workers]
+            u32                  m_max_worker_threads; // Number of worker threads
+            worker_thread_ctx_t* m_worker_thread_ctxs; // Worker thread contexts, worker_thread_ctx_t[m_max_workers]
             std::atomic<bool>    m_quit;
         };
 
         struct worker_thread_ctx_t
         {
-            system_t*      m_main_ctx;            //
-            s32            m_worker_thread_index; //
-            u32            m_max_jobs;            // Maximum number of jobs that can be created by this worker
-            job_t*         m_jobs;                // Array of jobs, job_t[m_max_jobs]
-            local_queue_t* m_jobs_free_queue;     // This worker can take a new job from this queue and initialize it
-            local_queue_t* m_jobs_new_queue;      // Queue of jobs that need to be processed
-            mpsc_queue_t*  m_jobs_done_queue;     // These are jobs that are 'done', can be pushed here from any worker thread
-            spmc_queue_t*  m_scheduled_work;      // Worker thread work queue
+            system_t*        m_main_ctx;            //
+            s32              m_worker_thread_index; //
+            u32              m_max_jobs;            // Maximum number of jobs that can be created by this worker
+            job_t*           m_jobs;                // Array of jobs, job_t[m_max_jobs]
+            local_queue_t*   m_jobs_free_queue;     // This worker can take a new job from this queue and initialize it
+            local_queue_t*   m_jobs_new_queue;      // Queue of jobs that need to be processed
+            mpsc_queue_t*    m_jobs_done_queue;     // These are jobs that are 'done', can be pushed here from any worker thread
+            spmc_queue_t*    m_scheduled_work;      // Worker thread work queue
+            signal_t*        m_signal;              // Signal this worker thread is waiting on when there is no work
+            std::atomic<s32> m_idle;                // Is this worker thread idle ?
         };
 
         void g_create(alloc_t* allocator, system_t*& system, s32 threadCount)
@@ -219,6 +220,7 @@ namespace ncore
                 {
                     // No work, add this worker to the idle worker threads queue
                     queue_enqueue(main_ctx->m_idle_worker_threads, worker_index);
+                    // Note: Should wait on a semaphore here
                 }
 
                 // Get the job object
