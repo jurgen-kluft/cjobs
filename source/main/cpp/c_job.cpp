@@ -35,14 +35,57 @@ namespace ncore
             void*            m_dummy[3];         // Padding to make sure that this struct is cacheline aligned
         };
 
-        inline static void s_create(job_t* job, alloc_t* allocator) { signal_create(allocator, job->m_signal); }
-        inline static void s_exit(job_t* job, alloc_t* allocator) { signal_destroy(allocator, job->m_signal); }
-        inline static void s_reset(job_t* job, s32 N)
+        struct system_t 
+        {
+            u32                  m_max_worker_threads;  // Number of worker threads
+            mpmc_queue_t*        m_idle_worker_threads; // Worker threads that have no work, queue<s32>
+            worker_thread_ctx_t* m_worker_thread_ctxs;  // Worker thread contexts, worker_thread_ctx_t[m_max_workers]
+            std::atomic<bool>    m_quit;
+        };
+
+        void g_create(alloc_t* allocator, system_t*& system, s32 threadCount)
+        {
+            system                       = (system_t*)allocator->allocate(sizeof(system_t));
+            system->m_max_worker_threads = threadCount;
+            system->m_worker_thread_ctxs = (worker_thread_ctx_t*)allocator->allocate(threadCount * sizeof(worker_thread_ctx_t));
+            system->m_quit.store(false);
+
+            // Create worker threads
+            for (s32 i = 0; i < threadCount; ++i)
+            {
+                worker_thread_ctx_t* ctx   = system->m_worker_thread_ctxs + i;
+                ctx->m_main_ctx            = system;
+                ctx->m_worker_thread_index = i;
+                ctx->m_max_jobs            = 1024;
+                ctx->m_jobs                = (job_t*)allocator->allocate(ctx->m_max_jobs * sizeof(job_t));
+                ctx->m_jobs_free_queue     = local_queue_create(allocator, ctx->m_max_jobs);
+                ctx->m_jobs_new_queue      = local_queue_create(allocator, ctx->m_max_jobs);
+                ctx->m_jobs_done_queue     = mpsc_queue_create(allocator, ctx->m_max_jobs);
+                ctx->m_scheduled_work      = spmc_queue_create(allocator, ctx->m_max_jobs);
+            }
+
+            // Create idle worker threads queue
+            system->m_idle_worker_threads = mpmc_queue_create(allocator, threadCount);
+
+            // Start worker threads
+            for (s32 i = 0; i < threadCount; ++i)
+            {
+                worker_t* worker       = (worker_t*)allocator->allocate(sizeof(worker_t));
+                worker->m_main_ctx     = system;
+                worker->m_worker_ctx   = system->m_worker_thread_ctxs + i;
+                worker->m_worker_index = i;
+                // thread_create(worker_thread, worker);
+            }
+        }
+
+        inline static void s_job_create(job_t* job, alloc_t* allocator) { signal_create(allocator, job->m_signal); }
+        inline static void s_job_destroy(job_t* job, alloc_t* allocator) { signal_destroy(allocator, job->m_signal); }
+        inline static void s_job_reset(job_t* job, s32 N)
         {
             job->m_count.store(N);
             signal_reset(job->m_signal);
         }
-        inline static bool s_set_done(job_t* job)
+        inline static bool s_job_set_done(job_t* job)
         {
             s32 const prevCount = job->m_count.fetch_sub(1);
             if (prevCount == 1)
@@ -52,14 +95,14 @@ namespace ncore
             }
             return false;
         }
-        inline static bool s_is_done(job_t* job) { return job->m_count.load() == 0; }
-        inline static void s_wait_until_done(job_t* job) { signal_wait(job->m_signal); }
+        inline static bool s_job_is_done(job_t* job) { return job->m_count.load() == 0; }
+        inline static void s_job_wait_until_done(job_t* job) { signal_wait(job->m_signal); }
 
-        struct main_ctx_t;
+        struct system_t;
 
         struct worker_thread_ctx_t
         {
-            main_ctx_t* m_main_ctx;
+            system_t* m_main_ctx;
             s32         m_worker_thread_index;
             // semaphore_t m_semaphore; // Semaphore to signal this worker thread
 
@@ -71,18 +114,10 @@ namespace ncore
             spmc_queue_t*  m_scheduled_work;  // Worker thread work queue
         };
 
-        struct main_ctx_t
-        {
-            u32                  m_max_worker_threads;  // Number of worker threads
-            mpmc_queue_t*        m_idle_worker_threads; // Worker threads that have no work, queue<s32>
-            worker_thread_ctx_t* m_worker_thread_ctxs;  // Worker thread contexts, worker_thread_ctx_t[m_max_workers]
-            std::atomic<bool>    m_quit;
-        };
-
         // A job will be scheduled as one or many work items depending on how the user wants to schedule it
         static job_handle_t s_schedule_single(worker_thread_ctx_t* ctx, ijob_t* job)
         {
-            main_ctx_t* main_ctx = ctx->m_main_ctx;
+            system_t* main_ctx = ctx->m_main_ctx;
 
             u64 job_index = 0;
             queue_dequeue(ctx->m_jobs_free_queue, job_index);
@@ -91,7 +126,7 @@ namespace ncore
             job_item->m_total_iter_count = 1;
             job_item->m_inner_iter_count = 1;
             job_item->m_dependency       = nullptr;
-            s_reset(job_item, 1);
+            s_job_reset(job_item, 1);
 
             // Should we enqueue this job on all the worker queues ?
             // The top u32 of the job_index should be the worker thread index that created this job,
@@ -110,7 +145,7 @@ namespace ncore
         {
             s32 const thread_index = 0; // Which worker thread should we schedule the job on?
 
-            main_ctx_t* main_ctx = ctx->m_main_ctx;
+            system_t* main_ctx = ctx->m_main_ctx;
 
             u64 job_index = 0;
             queue_dequeue(ctx->m_jobs_free_queue, job_index);
@@ -119,7 +154,7 @@ namespace ncore
             job_item->m_total_iter_count = 1;
             job_item->m_inner_iter_count = 1;
             job_item->m_dependency       = nullptr;
-            s_reset(job_item, 1);
+            s_job_reset(job_item, 1);
 
             // Should we enqueue this job on all the worker queues ?
             // The top u32 of the job_index should be the worker thread index that created this job
@@ -135,7 +170,7 @@ namespace ncore
 
         static job_handle_t s_schedule_parallel(worker_thread_ctx_t* ctx, ijob_t* job, s32 array_length, s32 inner_count)
         {
-            main_ctx_t* main_ctx = ctx->m_main_ctx;
+            system_t* main_ctx = ctx->m_main_ctx;
 
             u64 job_index = 0;
             queue_dequeue(ctx->m_jobs_free_queue, job_index);
@@ -146,7 +181,7 @@ namespace ncore
             job_item->m_dependency       = nullptr;
 
             s32 const N = (array_length + inner_count - 1) / inner_count;
-            s_reset(job_item, N);
+            s_job_reset(job_item, N);
 
             // Should we enqueue this job on all the worker queues ?
             // The top u32 of the job_index should be the worker thread index that created this job
@@ -165,14 +200,14 @@ namespace ncore
 
         struct worker_t
         {
-            main_ctx_t*          m_main_ctx;
+            system_t*          m_main_ctx;
             worker_thread_ctx_t* m_worker_ctx;
             s32                  m_worker_index;
         };
 
         static void s_worker_thread(worker_t* worker)
         {
-            main_ctx_t*          main_ctx     = worker->m_main_ctx;
+            system_t*          main_ctx     = worker->m_main_ctx;
             worker_thread_ctx_t* this_ctx     = worker->m_worker_ctx;
             s32 const            worker_index = worker->m_worker_index;
 
@@ -209,7 +244,7 @@ namespace ncore
                     }
                     else
                     {
-                        if (s_set_done(job)) // Mark the job as done
+                        if (s_job_set_done(job)) // Mark the job as done
                         {
                             // We where the first to mark this job as done, so we can push it to the done queue
                             // of the worker thread that created this job (owner_index)

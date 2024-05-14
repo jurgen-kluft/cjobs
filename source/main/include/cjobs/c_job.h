@@ -11,7 +11,7 @@ namespace ncore
 
     namespace njob
     {
-        class system_t;
+        struct system_t;
 
         // -----------------------------------------------------------------------------------------------------------------------
         // Job
@@ -26,6 +26,7 @@ namespace ncore
         // Note: As a user you should take care of a job handle, if you do not plan to use it anymore, you should release it.
         typedef void* job_handle_t; 
 
+        // -----------------------------------------------------------------------------------------------------------------------
         void g_create(alloc_t* allocator, system_t*& system, s32 threadCount = 1);
         
         // -----------------------------------------------------------------------------------------------------------------------
