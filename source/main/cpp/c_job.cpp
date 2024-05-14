@@ -22,8 +22,8 @@ namespace ncore
 {
     namespace njob
     {
-        struct job_t
-        {
+        struct job_t                             // 64 bytes
+        {                                        //
             ijob_t*          m_job;              // Job to execute (user)
             s32              m_total_iter_count; // Total loop iteration count
             s16              m_inner_iter_count; // Inner loop iteration count
@@ -127,7 +127,7 @@ namespace ncore
             // Should we enqueue this job on all the worker queues ?
             // The top u32 of the job_index should be the worker thread index that created this job,
             // the bottom 32 bits should be the job index.
-            job_index = (job_index & 0xFFFFFFFF) | (ctx->m_worker_thread_index << 32);
+            job_index = (ctx->m_worker_thread_index << 32) | (job_index & 0xFFFFFFFF);
             queue_enqueue(ctx->m_scheduled_work, job_index);
 
             // TODO
@@ -154,7 +154,7 @@ namespace ncore
 
             // Should we enqueue this job on all the worker queues ?
             // The top u32 of the job_index should be the worker thread index that created this job
-            job_index = (job_index & 0xFFFFFFFF) | (ctx->m_worker_thread_index << 32);
+            job_index = (ctx->m_worker_thread_index << 32) | (job_index & 0xFFFFFFFF);
             queue_enqueue(ctx->m_scheduled_work, job_index);
 
             // TODO
@@ -176,12 +176,16 @@ namespace ncore
             job_item->m_inner_iter_count = 1;
             job_item->m_dependency       = nullptr;
 
+            // The work is divided into N work items, for every finished work item
+            // the worker thread will decrement the count of the job, when the count
+            // reaches zero the job is done.
             s32 const N = (array_length + inner_count - 1) / inner_count;
             s_job_reset(job_item, N);
 
             // Should we enqueue this job on all the worker queues ?
-            // The top u32 of the job_index should be the worker thread index that created this job
-            job_index = (job_index & 0xFFFFFFFF) | (ctx->m_worker_thread_index << 32);
+            // The top u32 of the job_index should be the worker thread index that created this job.
+            // The bottom 32 bits should be the job index.
+            job_index = (ctx->m_worker_thread_index << 32) | (job_index & 0xFFFFFFFF);
             queue_enqueue(ctx->m_scheduled_work, job_index);
 
             // TODO
@@ -221,7 +225,7 @@ namespace ncore
                 // Top part of the u64 is the worker index that created the job
                 u32 const job_index   = work & 0xFFFFFFFF;
                 u32 const owner_index = (work >> 32) & 0xFFFFFFFF;
-                job_t*    job         = main_ctx->m_worker_thread_ctxs[job_index].m_jobs + job_index;
+                job_t*    job         = main_ctx->m_worker_thread_ctxs[owner_index].m_jobs + job_index;
 
                 // Keep working this job until it is done
                 while (true)
