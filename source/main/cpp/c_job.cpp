@@ -15,51 +15,50 @@
 #ifdef TARGET_MAC
 #    include <mach/mach.h>
 #    include <mach/task.h>
-#    include <mach/semaphore.h>
 #endif
 
 namespace ncore
 {
     namespace njob
     {
-        struct job_t                             // 64 bytes
+        struct work_t                            // 64 bytes
         {                                        //
-            ijob_t*          m_job;              // Job to execute (user)
+            job_t*           m_job;              // Job to execute (user)
             s32              m_total_iter_count; // Total loop iteration count
             s16              m_inner_iter_count; // Inner loop iteration count
             s16              m_worker_index;     // Worker thread that created this job
-            job_t*           m_dependency;       // Job that needs to be done before this job can be executed
+            work_t*          m_dependency;       // Job that needs to be done before this job can be executed
             signal_t*        m_signal;           // Signal to wait on when this job is not done
-            std::atomic<s32> m_count;            // Number of work items that are not done
             std::atomic<s32> m_index;            // Index, begin and end can be calculated from job->m_total_iter_count and job->m_inner_iter_count
-            void*            m_dummy[3];         // Padding to make sure that this struct is cacheline aligned
+            s32              m_dummy;            // Padding to make sure that this struct is cacheline aligned
+            void*            m_dummy3[3];        // Padding to make sure that this struct is cacheline aligned
         };
 
         struct system_t
         {
-            u32                  m_worker_thread_count; // Number of worker threads
-            worker_thread_ctx_t* m_worker_thread_ctxs;  // Worker thread contexts, worker_thread_ctx_t[m_max_workers]
-            std::atomic<bool>    m_quit;
+            u32               m_worker_thread_count; // Number of worker threads
+            worker_ctx_t*     m_worker_thread_ctxs;  // Worker thread contexts, worker_ctx_t[m_max_workers]
+            std::atomic<bool> m_quit;
         };
 
-        struct worker_thread_ctx_t
+        struct worker_ctx_t
         {
-            s32              m_worker_index;    //
-            u32              m_max_jobs;        // Maximum number of jobs that can be created by this worker
-            job_t*           m_jobs;            // Array of jobs, job_t[m_max_jobs]
-            local_queue_t*   m_jobs_free_queue; // This worker can take a new job from this queue and initialize it
-            local_queue_t*   m_jobs_new_queue;  // Queue of jobs that need to be processed
-            mpsc_queue_t*    m_jobs_done_queue; // These are jobs that are 'done', can be pushed here from any worker thread
-            spmc_queue_t*    m_scheduled_work;  // Worker thread work queue
-            signal_t*        m_signal;          // Signal this worker thread is waiting on when there is no work
-            std::atomic<s32> m_idle;            // Is this worker thread idle ?
+            s32                    m_worker_index;    //
+            u32                    m_max_jobs;        // Maximum number of jobs that can be created by this worker
+            work_t*                m_jobs;            // Array of jobs, work_t[m_max_jobs]
+            local_queue_t*         m_jobs_free_queue; // This worker can take a new job from this queue and initialize it
+            local_queue_t*         m_jobs_new_queue;  // Queue of jobs that need to be processed
+            mpsc_queue_t*          m_jobs_done_queue; // These are jobs that are 'done', can be pushed here from any worker thread
+            mpsc_blocking_queue_t* m_scheduled_work;  // Worker thread work queue
+            signal_t*              m_signal;          // Signal this worker thread is waiting on when there is no work
+            counter_t*             m_jobs_count;      // Number of jobs that are not done
         };
 
         struct worker_t
         {
-            system_t*            m_main_ctx;
-            worker_thread_ctx_t* m_worker_ctx;
-            s32                  m_worker_index;
+            system_t*     m_main_ctx;
+            worker_ctx_t* m_worker_ctx;
+            s32           m_worker_index;
         };
 
         void g_create(alloc_t* allocator, system_t*& system, s32 threadCount)
@@ -68,20 +67,20 @@ namespace ncore
 
             system                        = (system_t*)allocator->allocate(sizeof(system_t));
             system->m_worker_thread_count = threadCount;
-            system->m_worker_thread_ctxs  = (worker_thread_ctx_t*)allocator->allocate(threadCount * sizeof(worker_thread_ctx_t));
+            system->m_worker_thread_ctxs  = (worker_ctx_t*)allocator->allocate(threadCount * sizeof(worker_ctx_t));
             system->m_quit.store(false);
 
             // Create worker threads
             for (s32 i = 0; i < threadCount; ++i)
             {
-                worker_thread_ctx_t* ctx = system->m_worker_thread_ctxs + i;
-                ctx->m_worker_index      = i;
-                ctx->m_max_jobs          = max_jobs;
-                ctx->m_jobs              = (job_t*)allocator->allocate(ctx->m_max_jobs * sizeof(job_t));
-                ctx->m_jobs_free_queue   = local_queue_create(allocator, ctx->m_max_jobs);
-                ctx->m_jobs_new_queue    = local_queue_create(allocator, ctx->m_max_jobs);
-                ctx->m_jobs_done_queue   = mpsc_queue_create(allocator, ctx->m_max_jobs);
-                ctx->m_scheduled_work    = spmc_queue_create(allocator, ctx->m_max_jobs);
+                worker_ctx_t* ctx      = system->m_worker_thread_ctxs + i;
+                ctx->m_worker_index    = i;
+                ctx->m_max_jobs        = max_jobs;
+                ctx->m_jobs            = (work_t*)allocator->allocate(ctx->m_max_jobs * sizeof(work_t));
+                ctx->m_jobs_free_queue = local_queue_create(allocator, ctx->m_max_jobs);
+                ctx->m_jobs_new_queue  = local_queue_create(allocator, ctx->m_max_jobs);
+                ctx->m_jobs_done_queue = mpsc_queue_create(allocator, ctx->m_max_jobs);
+                ctx->m_scheduled_work  = mpsc_blocking_queue_create(allocator, ctx->m_max_jobs);
             }
 
             // Start worker threads
@@ -95,35 +94,21 @@ namespace ncore
             }
         }
 
-        inline static void s_job_create(job_t* job, alloc_t* allocator) { signal_create(allocator, job->m_signal); }
-        inline static void s_job_destroy(job_t* job, alloc_t* allocator) { signal_destroy(allocator, job->m_signal); }
-        inline static void s_job_reset(job_t* job, s32 N)
-        {
-            job->m_count.store(N);
-            signal_reset(job->m_signal);
-        }
-        inline static bool s_job_set_done(job_t* job)
-        {
-            s32 const prevCount = job->m_count.fetch_sub(1);
-            if (prevCount == 1)
-            {
-                signal_set(job->m_signal);
-                return true;
-            }
-            return false;
-        }
-        inline static bool s_job_is_done(job_t* job) { return job->m_count.load() == 0; }
-        inline static void s_job_wait_until_done(job_t* job) { signal_wait(job->m_signal); }
+        inline static void s_job_create(work_t* job, alloc_t* allocator) { signal_create(allocator, job->m_signal); }
+        inline static void s_job_destroy(work_t* job, alloc_t* allocator) { signal_destroy(allocator, job->m_signal); }
+        inline static void s_job_reset(work_t* job, s32 N) { signal_reset(job->m_signal); }
+        inline static bool s_job_set_done(work_t* job) { return signal_set(job->m_signal); }
+        inline static void s_job_wait_until_done(work_t* job) { signal_wait(job->m_signal); }
 
         // A job will be scheduled as one or many work items depending on how the user wants to schedule it
-        static job_handle_t s_schedule_single(worker_t* worker, ijob_t* job)
+        static job_handle_t s_schedule_single(worker_t* worker, job_t* job)
         {
-            system_t*            main_ctx   = worker->m_main_ctx;
-            worker_thread_ctx_t* worker_ctx = worker->m_worker_ctx;
+            system_t*     main_ctx   = worker->m_main_ctx;
+            worker_ctx_t* worker_ctx = worker->m_worker_ctx;
 
             u64 job_index = 0;
             queue_dequeue(worker_ctx->m_jobs_free_queue, job_index);
-            job_t* job_item              = worker_ctx->m_jobs + job_index;
+            work_t* job_item             = worker_ctx->m_jobs + job_index;
             job_item->m_job              = job;
             job_item->m_total_iter_count = 1;
             job_item->m_inner_iter_count = 1;
@@ -143,14 +128,14 @@ namespace ncore
             return (job_handle_t)job_item;
         }
 
-        static job_handle_t s_schedule_for(worker_t* worker, ijob_t* job, s32 array_length)
+        static job_handle_t s_schedule_for(worker_t* worker, job_t* job, s32 array_length)
         {
-            system_t*            main_ctx   = worker->m_main_ctx;
-            worker_thread_ctx_t* worker_ctx = worker->m_worker_ctx;
+            system_t*     main_ctx   = worker->m_main_ctx;
+            worker_ctx_t* worker_ctx = worker->m_worker_ctx;
 
             u64 job_index = 0;
             queue_dequeue(worker_ctx->m_jobs_free_queue, job_index);
-            job_t* job_item              = worker_ctx->m_jobs + job_index;
+            work_t* job_item             = worker_ctx->m_jobs + job_index;
             job_item->m_job              = job;
             job_item->m_total_iter_count = 1;
             job_item->m_inner_iter_count = 1;
@@ -169,14 +154,14 @@ namespace ncore
             return (job_handle_t)job_item;
         }
 
-        static job_handle_t s_schedule_parallel(worker_t* worker, ijob_t* job, s32 array_length, s32 inner_count)
+        static job_handle_t s_schedule_parallel(worker_t* worker, job_t* job, s32 array_length, s32 inner_count)
         {
-            system_t*            main_ctx   = worker->m_main_ctx;
-            worker_thread_ctx_t* worker_ctx = worker->m_worker_ctx;
+            system_t*     main_ctx   = worker->m_main_ctx;
+            worker_ctx_t* worker_ctx = worker->m_worker_ctx;
 
             u64 job_index = 0;
             queue_dequeue(worker_ctx->m_jobs_free_queue, job_index);
-            job_t* job_item              = worker_ctx->m_jobs + job_index;
+            work_t* job_item             = worker_ctx->m_jobs + job_index;
             job_item->m_job              = job;
             job_item->m_total_iter_count = 1;
             job_item->m_inner_iter_count = 1;
@@ -206,18 +191,20 @@ namespace ncore
 
         static void s_worker_thread(worker_t* worker)
         {
-            system_t*            main_ctx     = worker->m_main_ctx;
-            worker_thread_ctx_t* this_ctx     = worker->m_worker_ctx;
-            s32 const            worker_index = worker->m_worker_index;
+            system_t*     main_ctx     = worker->m_main_ctx;
+            worker_ctx_t* this_ctx     = worker->m_worker_ctx;
+            s32 const     worker_index = worker->m_worker_index;
 
             while (!main_ctx->m_quit.load())
             {
-                // Wait for work
+                // NOTE: we could be taking all work out of the queue and possibly even
+                //       sort it by priority
+
                 u64 work;
-                if (!queue_dequeue(this_ctx->m_scheduled_work, work))
+                s32 const queued_items = queue_dequeue(this_ctx->m_scheduled_work, work);
+                if (!)
                 {
-                    this_ctx->m_idle.fetch_or(1);    // No work, mark this worker as idle
-                    signal_wait(this_ctx->m_signal); // Note: Should wait on a semaphore here
+                    // Here we are unblocked, so we can go at it again to try and acquire work
                     continue;
                 }
 
@@ -225,7 +212,7 @@ namespace ncore
                 // Top part of the u64 is the worker index that created the job
                 u32 const job_index   = work & 0xFFFFFFFF;
                 u32 const owner_index = (work >> 32) & 0xFFFFFFFF;
-                job_t*    job         = main_ctx->m_worker_thread_ctxs[owner_index].m_jobs + job_index;
+                work_t*   job         = main_ctx->m_worker_thread_ctxs[owner_index].m_jobs + job_index;
 
                 // Keep working this job until it is done
                 while (true)
@@ -269,7 +256,7 @@ namespace ncore
         // How to handle dependencies and wait ?
         // What about sync points, perhaps this is just a special empty job ?
 
-        // Job handle can point directly to job_t
+        // Job handle can point directly to work_t
 
     } // namespace njob
 } // namespace ncore

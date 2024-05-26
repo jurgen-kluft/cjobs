@@ -11,7 +11,7 @@ namespace ncore
 {
     namespace mpsc
     {
-        static constexpr int_t c_cacheline_size = 64; // std::hardware_destructive_interference_size;
+        static constexpr int_t c_cacheline_size = 64;
         static constexpr u32   c_item_size      = 8;
 
         struct slot_t
@@ -42,6 +42,7 @@ namespace ncore
             queue_t(const queue_t&)            = delete;
             queue_t& operator=(const queue_t&) = delete;
 
+            // Unguarded, this will not check if the queue is full
             void push(u64 item) noexcept
             {
                 auto const head = m_producer.m_index.fetch_add(1);
@@ -64,6 +65,10 @@ namespace ncore
                         {
                             slot.item = item;
                             slot.turn.store(m_producer.turn(head) * 2 + 1, std::memory_order_release);
+
+                            // NOTE we signal here a semaphore
+                            //   m_sema.signal()
+
                             return true;
                         }
                     }
@@ -79,6 +84,7 @@ namespace ncore
                 }
             }
 
+            // Unguarded, this will not check if the queue is empty
             void pop(u64& item) noexcept
             {
                 auto const tail = m_consumer.m_index.fetch_add(1);
@@ -109,6 +115,10 @@ namespace ncore
                         tail                = m_consumer.m_index.load(std::memory_order_acquire);
                         if (tail == prevTail)
                         {
+                            // NOTE we wait here on a semaphore to be signalled
+                            //   m_sema.wait()
+                            //   continue;
+
                             return false;
                         }
                     }

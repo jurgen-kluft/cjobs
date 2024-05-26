@@ -16,28 +16,28 @@ namespace ncore
         // -----------------------------------------------------------------------------------------------------------------------
         // Job
 
-        class ijob_t
+        class job_t
         {
         public:
-            virtual ~ijob_t() {}
+            virtual ~job_t() {}
             virtual void execute(s32 from, s32 to) = 0;
         };
 
         // Note: As a user you should take care of a job handle, if you do not plan to use it anymore, you should release it.
-        typedef void* job_handle_t; 
+        typedef void* job_handle_t;
 
         // -----------------------------------------------------------------------------------------------------------------------
         void g_create(alloc_t* allocator, system_t*& system, s32 threadCount = 1);
-        
-        // -----------------------------------------------------------------------------------------------------------------------
-        void g_run(system_t* system, ijob_t* job, job_handle_t dependsOn = nullptr);
-        void g_run(system_t* system, ijob_t* job, s32 totalIterCount, job_handle_t dependsOn = nullptr);
-        void g_run(system_t* system, ijob_t* job, s32 totalIterCount, s32 innerIterCount, job_handle_t dependsOn = nullptr);
 
         // -----------------------------------------------------------------------------------------------------------------------
-        job_handle_t g_schedule_single(system_t* system, ijob_t* job, job_handle_t dependsOn = nullptr);
-        job_handle_t g_schedule_single(system_t* system, ijob_t* job, s32 totalIterCount, job_handle_t dependsOn = nullptr);
-        job_handle_t g_schedule_parallel(system_t* system, ijob_t* job, s32 totalIterCount, s32 innerIterCount, job_handle_t dependsOn = nullptr);
+        void g_run(system_t* system, job_t* job, job_handle_t dependsOn = nullptr);
+        void g_run(system_t* system, job_t* job, s32 totalIterCount, job_handle_t dependsOn = nullptr);
+        void g_run(system_t* system, job_t* job, s32 totalIterCount, s32 innerIterCount, job_handle_t dependsOn = nullptr);
+
+        // -----------------------------------------------------------------------------------------------------------------------
+        job_handle_t g_schedule_single(system_t* system, job_t* job, job_handle_t dependsOn = nullptr);
+        job_handle_t g_schedule_single(system_t* system, job_t* job, s32 totalIterCount, job_handle_t dependsOn = nullptr);
+        job_handle_t g_schedule_parallel(system_t* system, job_t* job, s32 totalIterCount, s32 innerIterCount, job_handle_t dependsOn = nullptr);
 
         // Job handle will be set to nullptr and the job will be released or marked as to be released
         bool g_releaseHandle(system_t* system, job_handle_t& handle);

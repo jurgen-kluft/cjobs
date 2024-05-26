@@ -11,7 +11,6 @@ namespace ncore
 {
     namespace local
     {
-        static constexpr s32 c_cacheline_size = 64;
         static constexpr s32 c_item_size      = 8;
 
         struct slot_t
@@ -28,7 +27,6 @@ namespace ncore
                 , m_writeIdx(0)
                 , m_readIdx(0)
             {
-                static_assert(sizeof(queue_t) == c_cacheline_size, "queue_t should be a multiple of c_cacheline_size bytes");
             }
 
             inline bool try_push(u64 item)
@@ -79,24 +77,19 @@ namespace ncore
             s32     m_writeIdx;
             s32     m_readIdx;
             s32     m_capacity;
-            s32     m_dummy[16 - 5];
+            s32     m_dummy;
         };
     } // namespace local
-
-    struct local_queue_t
-    {
-    };
 
     local_queue_t* local_queue_create(alloc_t* allocator, s32 item_count)
     {
         s32 const array_size = item_count * sizeof(local::slot_t);
-        void*     mem        = allocator->allocate(sizeof(local::queue_t) + array_size, local::c_cacheline_size);
+        void*     mem        = allocator->allocate(sizeof(local::queue_t) + array_size, sizeof(void*));
         if (mem == nullptr)
             return nullptr;
         local::slot_t* array_data = (local::slot_t*)((byte*)mem + sizeof(local::queue_t));
         ASSERTS(((u64)array_data & 0x7) == 0, "array_data is not aligned to 8 bytes");
         local::queue_t* queue = new (mem) local::queue_t(array_data, array_size);
-        ASSERTS(((u64)queue & (local::c_cacheline_size)) == 0, "queue is not aligned to c_cacheline_size bytes");
         return (local_queue_t*)queue;
     }
 

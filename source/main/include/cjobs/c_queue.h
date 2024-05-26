@@ -57,6 +57,13 @@ namespace ncore
     bool           queue_enqueue(local_queue_t* queue, u64 item);
     bool           queue_dequeue(local_queue_t* queue, u64& item);
 
+    // Blocking versions
+    struct mpsc_blocking_queue_t;
+    mpsc_blocking_queue_t* mpsc_blocking_queue_create(alloc_t* allocator, s32 item_count);
+    void                   queue_destroy(alloc_t* allocator, mpsc_blocking_queue_t* queue);
+    bool                   queue_enqueue(mpsc_blocking_queue_t* queue, u64 item);
+    bool                   queue_dequeue(mpsc_blocking_queue_t* queue, u64& item);
+
 } // namespace ncore
 
 #endif // __CJOBS_QUEUE_H__

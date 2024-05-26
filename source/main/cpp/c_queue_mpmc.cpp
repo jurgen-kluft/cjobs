@@ -115,6 +115,16 @@ namespace ncore
                 }
             }
 
+            // Returns the number of elements in the queue.
+            // The size can be negative when the queue is empty and there is at least one
+            // reader waiting. Since this is a concurrent queue the size is only a best
+            // effort guess until all reader and writer threads have been joined.
+            s32 size() const
+            {
+                s32 const n = (m_producer.m_index.load(std::memory_order_relaxed) - m_consumer.m_index.load(std::memory_order_relaxed));
+                return n < 0 ? (n + m_producer.m_capacity) : n;
+            }
+
             struct header_t
             {
                 header_t(slot_t* slots, s32 capacity)
