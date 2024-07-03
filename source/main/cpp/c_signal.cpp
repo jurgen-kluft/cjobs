@@ -39,9 +39,6 @@ namespace ncore
     private:
         HANDLE m_hSema;
 
-        __sema_t(const __sema_t& other)            = delete;
-        __sema_t& operator=(const __sema_t& other) = delete;
-
     public:
         void create(s32 initialCount = 0)
         {
@@ -66,9 +63,6 @@ namespace ncore
     {
     private:
         semaphore_t m_sema;
-
-        __sema_t(const __sema_t& other)            = delete;
-        __sema_t& operator=(const __sema_t& other) = delete;
 
     public:
         void create(s32 initialCount = 0)
@@ -101,9 +95,6 @@ namespace ncore
     {
     private:
         sem_t m_sema;
-
-        __sema_t(const __sema_t& other)            = delete;
-        __sema_t& operator=(const __sema_t& other) = delete;
 
     public:
         void create(s32 initialCount = 0)
@@ -143,11 +134,13 @@ namespace ncore
     class __signal_t
     {
     public:
-        // m_status >= 1: Signal is set.
-        // m_status == 0: Signal is idle and no threads are waiting.
-        // m_status == -N: Signal has N threads waiting and is not set yet.
+        // m_status == 1: Signal is set.
+        // m_status == 0: Signal is not-set and no threads are waiting.
+        // m_status == -N: Signal has N threads waiting and is not set.
         std::atomic<s32> m_status;
         __sema_t         m_sema;
+
+        __signal_t() = default;
 
         void init()
         {
@@ -157,22 +150,12 @@ namespace ncore
 
         void release() { m_sema.destroy(); }
 
-        bool signal_new()
-        {
-            // NOTE can we not just do a large add ?
-            s32 oldStatus = m_status.fetch_add(1 << 20, std::memory_order_relaxed);
-            if (oldStatus < 0)
-                m_sema.signal(-oldStatus); // Release all waiting threads.
-            // Return true if we were the first to signal.
-            return oldStatus <= 0;
-        }
-
         bool signal()
         {
             s32 oldStatus = m_status.load(std::memory_order_relaxed);
-            for (;;) // Increment atomically via CAS loop.
+            while (oldStatus < 1) // Increment atomically via CAS loop.
             {
-                s32 const newStatus = 1 << 30; // Set the signal so high that calls to wait will not block anymore
+                s32 const newStatus = 1;
                 if (m_status.compare_exchange_weak(oldStatus, newStatus, std::memory_order_release, std::memory_order_relaxed))
                     break;
                 // The compare-exchange failed, likely because another thread changed m_status.
@@ -181,80 +164,44 @@ namespace ncore
             if (oldStatus < 0)
                 m_sema.signal(-oldStatus); // Release all waiting threads.
 
-            // Return true if we were the first to signal.
+            // Return true if we were the one setting the signal
             return oldStatus <= 0;
         }
 
         void reset()
         {
-            signal();
-            m_status.store(0, std::memory_order_relaxed);
-        }
-
-        void wait()
-        {
-            s32 const previousStatus = m_status.fetch_sub(1, std::memory_order_acquire);
-            if (previousStatus < 1)
+            s32 oldStatus = m_status.load(std::memory_order_relaxed);
+            while (true)
             {
-                m_sema.wait();
-            }
-        }
-
-        DCORE_CLASS_PLACEMENT_NEW_DELETE
-    };
-
-    // This is a counter that can be incremented by multiple threads and decremented by one thread.
-    // A use-case is a queue where multiple threads can add items and one thread can remove items.
-    // The counter indicates how many items are in the queue and the thread removing items can wait
-    // for items to be added if the queue is empty.
-    class __counter_t
-    {
-    public:
-        // m_counter == +N: This indicates that there are N items in the queue.
-        // m_counter ==  0: This indicates that the queue is empty.
-        // m_counter == -1: This indicates that the queue was empty and a thread is now waiting.
-        std::atomic<s32> m_counter;
-        __sema_t         m_sema;
-
-        void init()
-        {
-            m_counter = 0;
-            m_sema.create(0);
-        }
-
-        void release() { m_sema.destroy(); }
-
-        void increment()
-        {
-            s32 oldCounter = m_counter.load(std::memory_order_relaxed);
-            for (;;) // Increment atomically via CAS loop.
-            {
-                s32 const newCounter = oldCounter <= 0 ? 0 : oldCounter + 1;
-                if (m_counter.compare_exchange_weak(oldCounter, newCounter, std::memory_order_release, std::memory_order_relaxed))
+                s32 const newStatus = 0;
+                if (m_status.compare_exchange_weak(oldStatus, newStatus, std::memory_order_release, std::memory_order_relaxed))
                     break;
-                // The compare-exchange failed, likely because another thread changed m_counter.
-                // oldCounter has been updated. Retry the CAS loop.
+                // The compare-exchange failed, likely because another thread changed m_status.
+                // oldStatus has been updated. Retry the CAS loop.
             }
-            if (oldCounter < 0)
-                m_sema.signal(); // Release one waiting thread.
+            if (oldStatus < 0)
+                m_sema.signal(-oldStatus); // Release all waiting threads.
         }
 
-        // Can only be called by one thread, returns the items available so
-        // that the caller knows it can decrement the counter more and doing
-        // so can empty the queue without triggering the 'wait'.
-        s32 decrement()
+        void wait(bool autoReset)
         {
-            s32 const previousCounter = m_counter.fetch_sub(1, std::memory_order_acquire);
-            if (previousCounter < 1)
+            s32 oldStatus = m_status.load(std::memory_order_relaxed);
+            while (true)
             {
-                m_sema.wait();
-                return 1; // One item is available again
+                s32 const newStatus = (oldStatus <= 0) ? (oldStatus - 1) : (autoReset ? 0 : 1);
+                if (m_status.compare_exchange_weak(oldStatus, newStatus, std::memory_order_release, std::memory_order_relaxed))
+                    break;
+                // The compare-exchange failed, likely because another thread changed m_status.
+                // oldStatus has been updated. Retry the CAS loop.
             }
-            return previousCounter;
+
+            if (oldStatus < 1)
+                m_sema.wait();
         }
 
         DCORE_CLASS_PLACEMENT_NEW_DELETE
     };
+
 
     void signal_create(alloc_t* allocator, signal_t*& event)
     {
@@ -270,22 +217,16 @@ namespace ncore
         allocator->deallocate(e);
     }
 
-    void signal_wait(signal_t* event)
+    void signal_wait(signal_t* event, bool autoReset)
     {
         __signal_t* e = (__signal_t*)event;
-        e->wait();
+        e->wait(autoReset);
     }
 
     bool signal_set(signal_t* event)
     {
         __signal_t* e = (__signal_t*)event;
         return e->signal();
-    }
-
-    void signal_reset(signal_t* event)
-    {
-        __signal_t* e = (__signal_t*)event;
-        e->reset();
     }
 
 } // namespace ncore

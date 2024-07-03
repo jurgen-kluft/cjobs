@@ -106,6 +106,33 @@ namespace ncore
                 return true;
             }
 
+            s32 try_pop_multiple(u64* items, s32 count) noexcept
+            {
+                auto readIdx = m_readIdx.load(std::memory_order_relaxed);
+                if (readIdx == m_writeIdxCache)
+                {
+                    m_writeIdxCache = m_writeIdx.load(std::memory_order_acquire);
+                    if (m_writeIdxCache == readIdx)
+                    {
+                        return false;
+                    }
+                }
+
+                // retrieve multiple items
+                s32 i = 0;
+                while (i < count && readIdx != m_writeIdxCache)
+                {
+                    items[i++] = m_consumer.m_slots[readIdx++];
+                    if (readIdx == m_consumer.m_capacity)
+                    {
+                        readIdx = 0;
+                    }
+                }
+
+                m_readIdx.store(readIdx, std::memory_order_release);
+                return i;
+            }
+
             DCORE_CLASS_PLACEMENT_NEW_DELETE
 
             struct header_t
@@ -166,6 +193,12 @@ namespace ncore
     {
         spsc::queue_t* spsc_queue = (spsc::queue_t*)queue;
         return spsc_queue->try_pop(item);
+    }
+
+    s32           queue_dequeue_multiple(spsc_queue_t* queue, u64* items, s32 count)
+    {
+        spsc::queue_t* spsc_queue = (spsc::queue_t*)queue;
+        return spsc_queue->try_pop_multiple(items, count);
     }
 
 } // namespace ncore
