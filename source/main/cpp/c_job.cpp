@@ -61,13 +61,13 @@ namespace ncore
 
         struct system_t
         {
-            context_t* m_contexts;                  // Thread contexts, context_t[m_contexts_num]
-            worker_t*  m_workers;                   // The worker instances
-            u16        m_contexts_num;              // Number of contexts
-            u16        m_workers_num;               // Number of workers, also means number of worker threads
-            u16        m_max_threads;               // Maximum number of threads that can be recognized, this also means threads that interact with the job system
-            u16        m_num_threads;               // The number of recognized threads
-            u64*       m_thread_id_to_worker_index; // Every worker ctx has a thread ID
+            context_t* m_contexts;             // Thread contexts, context_t[m_contexts_num]
+            worker_t*  m_workers;              // The worker instances
+            u16        m_contexts_num;         // Number of contexts
+            u16        m_workers_num;          // Number of workers, also means number of worker threads
+            u16        m_max_threads;          // Maximum number of threads that can be recognized, this also means threads that interact with the job system
+            u16        m_num_threads;          // The number of recognized threads
+            u64*       m_thread_id_to_context; // Every thread has a context
         };
 
         // This is the thread function that each worker thread runs to execute jobs
@@ -170,7 +170,7 @@ namespace ncore
             // skip the worker contexts
             for (s32 i = system->m_workers_num; i < system->m_num_threads; ++i)
             {
-                if (system->m_thread_id_to_worker_index[i] == thread_id)
+                if (system->m_thread_id_to_context[i] == thread_id)
                 {
                     return i;
                 }
@@ -178,7 +178,7 @@ namespace ncore
 
             // Register this thread
             s32 const slot                            = system->m_num_threads++;
-            system->m_thread_id_to_worker_index[slot] = thread_id;
+            system->m_thread_id_to_context[slot] = thread_id;
             return slot;
         }
 
@@ -332,7 +332,6 @@ namespace ncore
                                 s32 const num_jobs = job->m_job->job_finished(this_ctx->m_scheduling, this_ctx->m_max_scheduling); // Notify the user that this job is done
 
                                 // TODO Schedule these new jobs for all worker threads
-
                             }
                         }
                         else
@@ -364,14 +363,24 @@ namespace ncore
         //    work items take longer to process and the chance of contention will be lower which will lead to
         //    better performance.
 
-        // How to handle dependencies and wait ?
-        // What about sync points, perhaps this is just a special empty job ?
+        void g_schedule(system_t* system, u64 current_thread_id, job_t* job)
+        {
+            s32 const ctx_slot =  s_find_or_register_slot_for_thread_id(system, current_thread_id);
+            s_schedule_single(system, &system->m_contexts[ctx_slot], job);
+        }
 
-        // Job handle can point directly to work_t
+        void g_schedule_single(system_t* system, u64 current_thread_id, job_t* job, s32 totalIterCount)
+        {
+            s32 const ctx_slot =  s_find_or_register_slot_for_thread_id(system, current_thread_id);
+            s_schedule_for(system, &system->m_contexts[ctx_slot], job, totalIterCount);
+        }
 
-        void g_run(system_t* system, job_t* job) {}
-        void g_run(system_t* system, job_t* job, s32 totalIterCount) {}
-        void g_run(system_t* system, job_t* job, s32 totalIterCount, s32 innerIterCount) {}
+        void g_schedule_parallel(system_t* system, u64 current_thread_id, job_t* job, s32 totalIterCount, s32 innerIterCount)
+        {
+            s32 const ctx_slot =  s_find_or_register_slot_for_thread_id(system, current_thread_id);
+            s_schedule_parallel(system, &system->m_contexts[ctx_slot], job, totalIterCount, innerIterCount);
+        }
+
 
     } // namespace njob
 } // namespace ncore

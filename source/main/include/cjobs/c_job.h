@@ -20,13 +20,13 @@ namespace ncore
         struct system_t;
         struct graph_t;
 
-        graph_t* g_createGraph(alloc_t* allocator, system_t* system);
+        graph_t* g_createGraph(alloc_t* allocator, system_t* system, s32 maxJobs, s32 maxDependencies, s32 maxGroups);
         void     g_destroyGraph(alloc_t* allocator, graph_t*& graph);
 
         void graph_reset(graph_t* graph);
         s32  graph_add_group(graph_t* graph, const char* name); // For debugging and profiling
         void graph_add_job(graph_t* graph, job_t* job, s32 group);
-        void graph_add_dep(graph_t* graph, job_t* first, job_t* then);
+        bool graph_add_dep(graph_t* graph, job_t* first, job_t* then); // These jobs have to already been added to the graph
         void graph_execute(graph_t* graph);
         s32  graph_job_finished(graph_t* graph, job_t* job); // A running job when finished will call this function
 
@@ -48,9 +48,9 @@ namespace ncore
         void g_destroy(alloc_t* allocator, system_t*& system);
 
         // -----------------------------------------------------------------------------------------------------------------------
-        void g_schedule(system_t* system, job_t* job);
-        void g_schedule_single(system_t* system, job_t* job, s32 totalIterCount);
-        void g_schedule_parallel(system_t* system, job_t* job, s32 totalIterCount, s32 innerIterCount);
+        void g_schedule(system_t* system, u64 current_thread_id, job_t* job);
+        void g_schedule_single(system_t* system, u64 current_thread_id, job_t* job, s32 totalIterCount);
+        void g_schedule_parallel(system_t* system, u64 current_thread_id, job_t* job, s32 totalIterCount, s32 innerIterCount);
 
     } // namespace njob
 
