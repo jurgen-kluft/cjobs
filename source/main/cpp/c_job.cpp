@@ -177,7 +177,7 @@ namespace ncore
             }
 
             // Register this thread
-            s32 const slot                            = system->m_num_threads++;
+            s32 const slot                       = system->m_num_threads++;
             system->m_thread_id_to_context[slot] = thread_id;
             return slot;
         }
@@ -365,22 +365,206 @@ namespace ncore
 
         void g_schedule(system_t* system, u64 current_thread_id, job_t* job)
         {
-            s32 const ctx_slot =  s_find_or_register_slot_for_thread_id(system, current_thread_id);
+            s32 const ctx_slot = s_find_or_register_slot_for_thread_id(system, current_thread_id);
             s_schedule_single(system, &system->m_contexts[ctx_slot], job);
         }
 
         void g_schedule_single(system_t* system, u64 current_thread_id, job_t* job, s32 totalIterCount)
         {
-            s32 const ctx_slot =  s_find_or_register_slot_for_thread_id(system, current_thread_id);
+            s32 const ctx_slot = s_find_or_register_slot_for_thread_id(system, current_thread_id);
             s_schedule_for(system, &system->m_contexts[ctx_slot], job, totalIterCount);
         }
 
         void g_schedule_parallel(system_t* system, u64 current_thread_id, job_t* job, s32 totalIterCount, s32 innerIterCount)
         {
-            s32 const ctx_slot =  s_find_or_register_slot_for_thread_id(system, current_thread_id);
+            s32 const ctx_slot = s_find_or_register_slot_for_thread_id(system, current_thread_id);
             s_schedule_parallel(system, &system->m_contexts[ctx_slot], job, totalIterCount, innerIterCount);
         }
+    } // namespace njob
 
+    // -----------------------------------------------------------------------------------------------------------------------
+    // -----------------------------------------------------------------------------------------------------------------------
+    // -----------------------------------------------------------------------------------------------------------------------
+    // -----------------------------------------------------------------------------------------------------------------------
+
+    namespace njob
+    {
+        // -----------------------------------------------------------------------------------------------------------------------
+        // Node is used to integrate a job into the graph
+        // -----------------------------------------------------------------------------------------------------------------------
+        struct node_t
+        {
+            job_t*  m_job;              // The job that this node represents
+            s32     m_total_iter_count; //
+            s32     m_inner_iter_count; //
+            group_t m_group;            // The group this job belongs to
+            node_t* m_next;
+            node_t* m_prev;
+
+            void setup(job_t* job, s32 totalIterCount = 1, s32 innerIterCount = 1)
+            {
+                m_job              = job;
+                m_total_iter_count = totalIterCount;
+                m_inner_iter_count = innerIterCount;
+                m_next             = this;
+                m_prev             = this;
+            }
+
+            void push_back(node_t* node)
+            {
+                node->m_next   = this;
+                node->m_prev   = m_prev;
+                m_prev->m_next = node;
+                m_prev         = node;
+            }
+        };
+
+        // -----------------------------------------------------------------------------------------------------------------------
+        // A group is the main object of the graph and holds a list of jobs
+        // -----------------------------------------------------------------------------------------------------------------------
+        struct group_t
+        {
+            const char* m_name;   // Name of the group (AI, Physics, Animation, etc.)
+            group_t*    m_parent; // The parent of this group
+            group_t*    m_child;  // Children of this group
+            node_t*     m_jobs;   // Doubly Linked List of jobs that are part of this group
+            group_t*    m_next;   //
+            group_t*    m_prev;   //
+
+            void setup()
+            {
+                m_name   = nullptr;
+                m_parent = nullptr;
+                m_child  = nullptr;
+                m_next   = this;
+                m_prev   = this;
+            }
+
+            void add_sibling(group_t* group)
+            {
+                group->m_next  = this;
+                group->m_prev  = m_prev;
+                m_prev->m_next = group;
+                m_prev         = group;
+            }
+
+            void add_child(group_t* group)
+            {
+                group->m_parent = this;
+                if (m_child == nullptr)
+                {
+                    m_child = group;
+                }
+                else
+                {
+                    m_child->add_sibling(group);
+                }
+            }
+
+            void add_job(node_t* node)
+            {
+                if (m_jobs == nullptr)
+                {
+                    m_jobs = node;
+                }
+                else
+                {
+                    m_jobs->push_back(node);
+                }
+            }
+        };
+
+        // -----------------------------------------------------------------------------------------------------------------------
+        // The graph is the main data structure used to hold a tree of groups
+        // -----------------------------------------------------------------------------------------------------------------------
+        struct graph_t
+        {
+            s32             m_max_jobs;
+            s32             m_alloc_mem_size;
+            alloc_buffer_t* m_allocator;
+            u16*            m_sorted_jobs; // Sorted, sort key is the 'job' in 'job_array'
+            job_t**         m_jobs;
+            group_t*        m_current;
+            void*           m_alloc_mem;
+        };
+
+        // -----------------------------------------------------------------------------------------------------------------------
+        // Static utility functions
+        // -----------------------------------------------------------------------------------------------------------------------
+
+        static group_t* new_group(graph_t* graph, const char* name)
+        {
+            group_t* group = graph->m_allocator->construct<group_t>();
+            if (group == nullptr)
+                return nullptr;
+            group->setup();
+            group->m_name = name;
+            return group;
+        }
+
+        // -----------------------------------------------------------------------------------------------------------------------
+        // -----------------------------------------------------------------------------------------------------------------------
+
+        graph_t* g_createGraph(alloc_t* allocator, system_t* system, s32 maxJobs, s32 maxGroups)
+        {
+            graph_t* graph = (graph_t*)allocator->allocate(sizeof(graph_t));
+            if (graph == nullptr)
+                return nullptr;
+
+            graph->m_alloc_mem_size = 1 * 1024 * 1024;
+            graph->m_alloc_mem      = allocator->allocate(graph->m_alloc_mem_size);
+
+            alloc_buffer_t* alloc = allocator->construct<alloc_buffer_t>();
+            alloc->init((byte*)graph->m_alloc_mem, graph->m_alloc_mem_size);
+            graph->m_allocator   = alloc;
+            graph->m_max_jobs    = maxJobs;
+            graph->m_sorted_jobs = (u16*)allocator->allocate(sizeof(u16) * maxJobs);
+            graph->m_jobs        = (job_t**)allocator->allocate(sizeof(job_t*) * maxJobs);
+
+            return graph;
+        }
+
+        void g_destroyGraph(alloc_t* allocator, graph_t*& graph)
+        {
+            if (graph == nullptr)
+                return;
+
+            allocator->deallocate(graph->m_jobs);
+            allocator->deallocate(graph);
+            graph = nullptr;
+        }
+
+        void graph_reset(graph_t* graph)
+        {
+            graph->m_allocator->reset();
+            graph->m_current = graph->m_allocator->construct<group_t>();
+            graph->m_current->setup();
+        }
+
+        void graph_push_group(graph_t* graph, const char* name)
+        {
+            // the new group becomes a child of the current group, if this group already has a child
+            // then the new group should be added to the list of siblings of that child.
+            group_t* group = new_group(graph, name);
+            if (group == nullptr)
+                return;
+            graph->m_current->add_child(group);
+        }
+
+        void graph_pop_group(graph_t* graph)
+        {
+            ASSERT(graph->m_current->m_parent != nullptr);
+            graph->m_current = graph->m_current->m_parent; // the current group becomes the parent of the current group
+        }
+
+        void graph_add_job(graph_t* graph, job_t* job)
+        {
+            node_t* node = (node_t*)graph->m_allocator->allocate(sizeof(node_t));
+            node->setup(job);
+            graph->m_current->add_job(node);
+        }
+
+        void graph_execute(graph_t* graph) {}
 
     } // namespace njob
 } // namespace ncore

@@ -24,11 +24,11 @@ namespace ncore
         void     g_destroyGraph(alloc_t* allocator, graph_t*& graph);
 
         void graph_reset(graph_t* graph);
-        s32  graph_add_group(graph_t* graph, const char* name); // For debugging and profiling
-        void graph_add_job(graph_t* graph, job_t* job, s32 group);
-        bool graph_add_dep(graph_t* graph, job_t* first, job_t* then); // These jobs have to already been added to the graph
+        void graph_push_group(graph_t* graph, const char* name);
+        void graph_pop_group(graph_t* graph);
+        void graph_add_job(graph_t* graph, job_t* job);
+        void graph_add_job(graph_t* graph, job_t* job, s32 totalIterCount, s32 innerIterCount);
         void graph_execute(graph_t* graph);
-        s32  graph_job_finished(graph_t* graph, job_t* job); // A running job when finished will call this function
 
         // -----------------------------------------------------------------------------------------------------------------------
         // Job, a job is a unit of work that can be scheduled to run on a system. Jobs can be scheduled to run in parallel or
