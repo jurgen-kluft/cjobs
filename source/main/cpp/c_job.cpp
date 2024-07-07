@@ -73,7 +73,7 @@ namespace ncore
         // This is the thread function that each worker thread runs to execute jobs
         static void s_worker_thread(worker_t* worker);
 
-        void g_create(alloc_t* allocator, system_t*& system, s16 num_workers, s32 max_running_threads)
+        void g_create_system(alloc_t* allocator, system_t*& system, s32 num_workers, s32 max_running_threads)
         {
             s16 const max_jobs    = 1024;
             s16 const max_threads = num_workers;
@@ -394,18 +394,19 @@ namespace ncore
         // -----------------------------------------------------------------------------------------------------------------------
         struct node_t
         {
-            job_t*  m_job;              // The job that this node represents
-            s32     m_total_iter_count; //
-            s32     m_inner_iter_count; //
-            group_t m_group;            // The group this job belongs to
-            node_t* m_next;
-            node_t* m_prev;
+            job_t*   m_job;              // The job that this node represents
+            s32      m_total_iter_count; //
+            s32      m_inner_iter_count; //
+            group_t* m_group;            // The group this job belongs to
+            node_t*  m_next;
+            node_t*  m_prev;
 
-            void setup(job_t* job, s32 totalIterCount = 1, s32 innerIterCount = 1)
+            void setup(group_t* group, job_t* job, s32 totalIterCount = 1, s32 innerIterCount = 1)
             {
                 m_job              = job;
                 m_total_iter_count = totalIterCount;
                 m_inner_iter_count = innerIterCount;
+                m_group            = group;
                 m_next             = this;
                 m_prev             = this;
             }
@@ -431,10 +432,10 @@ namespace ncore
             group_t*    m_next;   //
             group_t*    m_prev;   //
 
-            void setup()
+            void setup(group_t* parent, const char* name)
             {
-                m_name   = nullptr;
-                m_parent = nullptr;
+                m_name   = name;
+                m_parent = parent;
                 m_child  = nullptr;
                 m_next   = this;
                 m_prev   = this;
@@ -450,7 +451,6 @@ namespace ncore
 
             void add_child(group_t* group)
             {
-                group->m_parent = this;
                 if (m_child == nullptr)
                 {
                     m_child = group;
@@ -466,11 +466,9 @@ namespace ncore
                 if (m_jobs == nullptr)
                 {
                     m_jobs = node;
+                    return;
                 }
-                else
-                {
-                    m_jobs->push_back(node);
-                }
+                m_jobs->push_back(node);
             }
         };
 
@@ -492,20 +490,19 @@ namespace ncore
         // Static utility functions
         // -----------------------------------------------------------------------------------------------------------------------
 
-        static group_t* new_group(graph_t* graph, const char* name)
+        static group_t* new_group(graph_t* graph, group_t* parent, const char* name)
         {
             group_t* group = graph->m_allocator->construct<group_t>();
             if (group == nullptr)
                 return nullptr;
-            group->setup();
-            group->m_name = name;
+            group->setup(parent, name);
             return group;
         }
 
         // -----------------------------------------------------------------------------------------------------------------------
         // -----------------------------------------------------------------------------------------------------------------------
 
-        graph_t* g_createGraph(alloc_t* allocator, system_t* system, s32 maxJobs, s32 maxGroups)
+        graph_t* g_create_graph(alloc_t* allocator, system_t* system, s32 maxJobs, s32 maxGroups)
         {
             graph_t* graph = (graph_t*)allocator->allocate(sizeof(graph_t));
             if (graph == nullptr)
@@ -524,7 +521,7 @@ namespace ncore
             return graph;
         }
 
-        void g_destroyGraph(alloc_t* allocator, graph_t*& graph)
+        void g_destroy(alloc_t* allocator, graph_t*& graph)
         {
             if (graph == nullptr)
                 return;
@@ -538,29 +535,26 @@ namespace ncore
         {
             graph->m_allocator->reset();
             graph->m_current = graph->m_allocator->construct<group_t>();
-            graph->m_current->setup();
+            graph->m_current->setup(graph->m_current, "main");
         }
 
         void graph_push_group(graph_t* graph, const char* name)
         {
             // the new group becomes a child of the current group, if this group already has a child
             // then the new group should be added to the list of siblings of that child.
-            group_t* group = new_group(graph, name);
+            group_t* group = new_group(graph, graph->m_current, name);
             if (group == nullptr)
                 return;
             graph->m_current->add_child(group);
+            graph->m_current = group;
         }
 
-        void graph_pop_group(graph_t* graph)
-        {
-            ASSERT(graph->m_current->m_parent != nullptr);
-            graph->m_current = graph->m_current->m_parent; // the current group becomes the parent of the current group
-        }
+        void graph_pop_group(graph_t* graph) { graph->m_current = graph->m_current->m_parent; }
 
         void graph_add_job(graph_t* graph, job_t* job)
         {
             node_t* node = (node_t*)graph->m_allocator->allocate(sizeof(node_t));
-            node->setup(job);
+            node->setup(graph->m_current, job);
             graph->m_current->add_job(node);
         }
 

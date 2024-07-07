@@ -20,8 +20,8 @@ namespace ncore
         struct system_t;
         struct graph_t;
 
-        graph_t* g_createGraph(alloc_t* allocator, system_t* system, s32 maxJobs, s32 maxDependencies, s32 maxGroups);
-        void     g_destroyGraph(alloc_t* allocator, graph_t*& graph);
+        graph_t* g_create_graph(alloc_t* allocator, system_t* system, s32 maxJobs, s32 maxGroups);
+        void     g_destroy(alloc_t* allocator, graph_t*& graph);
 
         void graph_reset(graph_t* graph);
         void graph_push_group(graph_t* graph, const char* name);
@@ -44,7 +44,7 @@ namespace ncore
         };
 
         // -----------------------------------------------------------------------------------------------------------------------
-        void g_create(alloc_t* allocator, system_t*& system, s32 threadCount = 4);
+        void g_create_system(alloc_t* allocator, system_t*& system, s32 num_workers = 4, s32 max_running_threads = 16);
         void g_destroy(alloc_t* allocator, system_t*& system);
 
         // -----------------------------------------------------------------------------------------------------------------------
