@@ -2,11 +2,13 @@ package main
 
 import (
 	"github.com/jurgen-kluft/ccode"
-	"github.com/jurgen-kluft/cjobs/package"
+	cpkg "github.com/jurgen-kluft/cjobs/package"
 )
 
 func main() {
-	ccode.Init()
-	ccode.GenerateFiles()
-	ccode.Generate(cjobs.GetPackage())
+	if ccode.Init() {
+		pkg := cpkg.GetPackage()
+		ccode.GenerateFiles(pkg)
+		ccode.Generate(pkg)
+	}
 }
