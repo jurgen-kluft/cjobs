@@ -1,6 +1,7 @@
 #include "ccore/c_target.h"
 #include "cbase/c_allocator.h"
 #include "cbase/c_integer.h"
+#include "callocator/c_allocator_linear.h"
 
 #include "cjobs/c_queue.h"
 #include "cjobs/c_job.h"
@@ -314,8 +315,8 @@ namespace ncore
                         s32 const work_index = job->m_work_indexx.fetch_add(1, std::memory_order_acquire);
 
                         // Compute the begin and end index of the iteration range
-                        s32 const work_begin = math::min(work_index * job->m_inner_iter_count, job->m_total_iter_count);
-                        s32 const work_end   = math::min(work_begin + job->m_inner_iter_count, job->m_total_iter_count);
+                        s32 const work_begin = math::g_min(work_index * job->m_inner_iter_count, job->m_total_iter_count);
+                        s32 const work_end   = math::g_min(work_begin + job->m_inner_iter_count, job->m_total_iter_count);
 
                         // Make sure that this work range is valid
                         if (work_begin < work_end)
@@ -479,7 +480,7 @@ namespace ncore
         {
             s32             m_max_jobs;
             s32             m_alloc_mem_size;
-            alloc_buffer_t* m_allocator;
+            linear_alloc_t* m_allocator;
             u16*            m_sorted_jobs; // Sorted, sort key is the 'job' in 'job_array'
             job_t**         m_jobs;
             group_t*        m_current;
@@ -492,7 +493,7 @@ namespace ncore
 
         static group_t* new_group(graph_t* graph, group_t* parent, const char* name)
         {
-            group_t* group = graph->m_allocator->construct<group_t>();
+            group_t* group = g_allocate<group_t>(graph->m_allocator);
             if (group == nullptr)
                 return nullptr;
             group->setup(parent, name);
@@ -511,8 +512,8 @@ namespace ncore
             graph->m_alloc_mem_size = 1 * 1024 * 1024;
             graph->m_alloc_mem      = allocator->allocate(graph->m_alloc_mem_size);
 
-            alloc_buffer_t* alloc = allocator->construct<alloc_buffer_t>();
-            alloc->init((byte*)graph->m_alloc_mem, graph->m_alloc_mem_size);
+            linear_alloc_t* alloc = g_allocate<linear_alloc_t>(allocator);
+            alloc->setup((byte*)graph->m_alloc_mem, graph->m_alloc_mem_size);
             graph->m_allocator   = alloc;
             graph->m_max_jobs    = maxJobs;
             graph->m_sorted_jobs = (u16*)allocator->allocate(sizeof(u16) * maxJobs);
@@ -526,6 +527,9 @@ namespace ncore
             if (graph == nullptr)
                 return;
 
+            allocator->deallocate(graph->m_alloc_mem);
+            allocator->deallocate(graph->m_allocator);
+            allocator->deallocate(graph->m_sorted_jobs);
             allocator->deallocate(graph->m_jobs);
             allocator->deallocate(graph);
             graph = nullptr;

@@ -11,7 +11,7 @@ namespace ncore
 {
     namespace local
     {
-        static constexpr s32 c_item_size      = 8;
+        static constexpr s32 c_item_size = 8;
 
         struct slot_t
         {

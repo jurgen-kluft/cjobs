@@ -11,8 +11,8 @@ namespace ncore
 {
     namespace mpsc
     {
- static constexpr int_t c_cacheline_size = 64;
-        static constexpr u32   c_item_size      = 8;
+        static constexpr s32 c_cacheline_size = 64;
+        static constexpr u32 c_item_size      = 8;
 
         struct local_ring_t
         {
@@ -21,12 +21,20 @@ namespace ncore
             u32  m_writer;
             u32  m_reader;
 
-            local_ring_t(u64* slots, u32 capacity)
-                : m_slots(slots)
-                , m_capacity(capacity)
+            local_ring_t()
+                : m_slots(nullptr)
+                , m_capacity(0)
                 , m_writer(0)
                 , m_reader(0)
             {
+            }
+
+            void setup(u64* slots, u32 capacity)
+            {
+                m_slots    = slots;
+                m_capacity = capacity;
+                m_writer   = 0;
+                m_reader   = 0;
             }
 
             bool is_empty() const { return m_reader == m_writer; }
@@ -66,6 +74,8 @@ namespace ncore
                     idx = 0;
                 return m_slots[i];
             }
+
+            DCORE_CLASS_PLACEMENT_NEW_DELETE
         };
 
         local_ring_t* create_ring_buffer(alloc_t* allocator, u32 capacity)
@@ -74,7 +84,9 @@ namespace ncore
             u8*       buffer = (u8*)allocator->allocate(size);
             if (buffer == nullptr)
                 return nullptr;
-            local_ring_t* ring = new (new_signature(), buffer) local_ring_t((u64*)(buffer + sizeof(local_ring_t)), capacity);
+            // local_ring_t* ring = new (new_signature(), buffer) local_ring_t((u64*)(buffer + sizeof(local_ring_t)), capacity);
+            local_ring_t* ring = new (buffer) local_ring_t();
+            ring->setup((u64*)(buffer + sizeof(local_ring_t)), capacity);
             return ring;
         }
 

@@ -11,8 +11,8 @@ namespace ncore
 {
     namespace spsc
     {
-        static constexpr int_t c_cacheline_size = 64; // std::hardware_destructive_interference_size;
-        static constexpr u32   c_item_size      = 8;
+        static constexpr s32 c_cacheline_size = 64; // std::hardware_destructive_interference_size;
+        static constexpr u32 c_item_size      = 8;
 
         class queue_t
         {
@@ -168,7 +168,7 @@ namespace ncore
 
     spsc_queue_t* spsc_queue_create(alloc_t* allocator, s32 item_count)
     {
-        s32 const array_size = (item_count + 1) * math::alignUp(spsc::c_item_size, spsc::c_cacheline_size);
+        s32 const array_size = (item_count + 1) * math::g_alignUp(spsc::c_item_size, spsc::c_cacheline_size);
         void*     mem        = allocator->allocate(array_size + sizeof(spsc::queue_t), spsc::c_cacheline_size);
         if (mem == nullptr)
             return nullptr;
