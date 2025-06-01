@@ -2,43 +2,48 @@ package cjobs
 
 import (
 	callocator "github.com/jurgen-kluft/callocator/package"
-	cbase "github.com/jurgen-kluft/cbase/package"
 	"github.com/jurgen-kluft/ccode/denv"
-	centry "github.com/jurgen-kluft/centry/package"
 	cthread "github.com/jurgen-kluft/cthread/package"
 	cunittest "github.com/jurgen-kluft/cunittest/package"
 )
 
-// GetPackage returns the package object of 'cjobs'
+const (
+	repo_path = "github.com\\jurgen-kluft"
+	repo_name = "cjobs"
+)
+
 func GetPackage() *denv.Package {
-	// Dependencies
-	unittestpkg := cunittest.GetPackage()
-	entrypkg := centry.GetPackage()
-	basepkg := cbase.GetPackage()
-	threadpkg := cthread.GetPackage()
-	allocatorpkg := callocator.GetPackage()
+	name := repo_name
 
-	// The main (cjobs) package
-	mainpkg := denv.NewPackage("cjobs")
-	mainpkg.AddPackage(unittestpkg)
-	mainpkg.AddPackage(entrypkg)
-	mainpkg.AddPackage(basepkg)
-	mainpkg.AddPackage(threadpkg)
-	mainpkg.AddPackage(allocatorpkg)
+	// dependencies
+	cunittestpkg := cunittest.GetPackage()
+	callocpkg := callocator.GetPackage()
+	cthreadpkg := cthread.GetPackage()
 
-	// 'cjobs' library
-	mainlib := denv.SetupCppLibProject("cjobs", "github.com\\jurgen-kluft\\cjobs")
-	mainlib.AddDependencies(basepkg.GetMainLib()...)
-	mainlib.AddDependencies(threadpkg.GetMainLib()...)
-	mainlib.AddDependencies(allocatorpkg.GetMainLib()...)
+	// main package
+	mainpkg := denv.NewPackage(repo_path, repo_name)
+	mainpkg.AddPackage(cunittestpkg)
+	mainpkg.AddPackage(callocpkg)
+	mainpkg.AddPackage(cthreadpkg)
 
-	// 'cjobs' unittest project
-	maintest := denv.SetupDefaultCppTestProject("cjobs"+"_test", "github.com\\jurgen-kluft\\cjobs")
-	maintest.AddDependencies(unittestpkg.GetMainLib()...)
-	maintest.Dependencies = append(maintest.Dependencies, mainlib)
+	// main library
+	mainlib := denv.SetupCppLibProject(mainpkg, name)
+	mainlib.AddDependencies(callocpkg.GetMainLib()...)
+	mainlib.AddDependencies(cthreadpkg.GetMainLib()...)
+
+	// test library
+	testlib := denv.SetupCppTestLibProject(mainpkg, name)
+	mainlib.AddDependencies(callocpkg.GetTestLib()...)
+	mainlib.AddDependencies(cthreadpkg.GetTestLib()...)
+	testlib.AddDependencies(cunittestpkg.GetTestLib()...)
+
+	// unittest project
+	maintest := denv.SetupCppTestProject(mainpkg, name)
+	maintest.AddDependencies(cunittestpkg.GetMainLib()...)
+	maintest.AddDependency(testlib)
 
 	mainpkg.AddMainLib(mainlib)
+	mainpkg.AddTestLib(testlib)
 	mainpkg.AddUnittest(maintest)
-
 	return mainpkg
 }
