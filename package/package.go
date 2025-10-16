@@ -28,18 +28,18 @@ func GetPackage() *denv.Package {
 
 	// main library
 	mainlib := denv.SetupCppLibProject(mainpkg, name)
-	mainlib.AddDependencies(callocpkg.GetMainLib()...)
-	mainlib.AddDependencies(cthreadpkg.GetMainLib()...)
+	mainlib.AddDependencies(callocpkg.GetMainLib())
+	mainlib.AddDependencies(cthreadpkg.GetMainLib())
 
 	// test library
 	testlib := denv.SetupCppTestLibProject(mainpkg, name)
-	mainlib.AddDependencies(callocpkg.GetTestLib()...)
-	mainlib.AddDependencies(cthreadpkg.GetTestLib()...)
-	testlib.AddDependencies(cunittestpkg.GetTestLib()...)
+	mainlib.AddDependencies(callocpkg.GetTestLib())
+	mainlib.AddDependencies(cthreadpkg.GetTestLib())
+	testlib.AddDependencies(cunittestpkg.GetTestLib())
 
 	// unittest project
 	maintest := denv.SetupCppTestProject(mainpkg, name)
-	maintest.AddDependencies(cunittestpkg.GetMainLib()...)
+	maintest.AddDependencies(cunittestpkg.GetMainLib())
 	maintest.AddDependency(testlib)
 
 	mainpkg.AddMainLib(mainlib)
