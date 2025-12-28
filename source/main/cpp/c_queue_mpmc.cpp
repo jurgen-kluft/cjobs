@@ -162,7 +162,7 @@ namespace ncore
         if (mem == nullptr)
             return nullptr;
         mpmc::slot_t* array_data = (mpmc::slot_t*)((byte*)mem + sizeof(mpmc::queue_t));
-        ASSERTS(math::g_isAligned((int_t)array_data, mpmc::c_cacheline_size), "array must be aligned to cache line boundary to prevent false sharing");
+        ASSERTS(math::isAligned((int_t)array_data, mpmc::c_cacheline_size), "array must be aligned to cache line boundary to prevent false sharing");
         mpmc::queue_t* queue = new (mem) mpmc::queue_t(array_data, array_size);
         return (mpmc_queue_t*)queue;
     }

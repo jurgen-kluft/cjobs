@@ -315,8 +315,8 @@ namespace ncore
                         s32 const work_index = job->m_work_indexx.fetch_add(1, std::memory_order_acquire);
 
                         // Compute the begin and end index of the iteration range
-                        s32 const work_begin = math::g_min(work_index * job->m_inner_iter_count, job->m_total_iter_count);
-                        s32 const work_end   = math::g_min(work_begin + job->m_inner_iter_count, job->m_total_iter_count);
+                        s32 const work_begin = math::min(work_index * job->m_inner_iter_count, job->m_total_iter_count);
+                        s32 const work_end   = math::min(work_begin + job->m_inner_iter_count, job->m_total_iter_count);
 
                         // Make sure that this work range is valid
                         if (work_begin < work_end)
