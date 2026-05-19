@@ -205,7 +205,7 @@ namespace ncore
 
     void signal_create(alloc_t* allocator, signal_t*& event)
     {
-        __signal_t* e = allocator->construct<__signal_t>();
+        __signal_t* e = g_allocate<__signal_t>(allocator);
         e->init();
         event = (signal_t*)e;
     }

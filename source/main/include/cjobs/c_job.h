@@ -33,14 +33,16 @@ namespace ncore
         // -----------------------------------------------------------------------------------------------------------------------
         // Job, a job is a unit of work that can be scheduled to run on a system. Jobs can be scheduled to run in parallel or
         // just to run on one thread.
+        typedef const char* (*job_name_fn)(void* user);                                   // For debugging and profiling
+        typedef void (*job_execute_fn)(void* user, s32 from, s32 to);                     // The 'from' and 'to' parameters are used to specify the range of iterations for parallel jobs, for non-parallel jobs, 'from' will be 0 and 'to' will be 1
+        typedef s32 (*job_finished_fn)(void* user, job_t** job_array, s32 job_array_max); // Returns the number of jobs to schedule if any
 
-        class job_t
+        struct job_t
         {
-        public:
-            virtual ~job_t() {}
-            virtual const char* job_name() const                                   = 0; // For debugging and profiling
-            virtual void        job_execute(s32 from, s32 to)                      = 0; //
-            virtual s32         job_finished(job_t** job_array, s32 job_array_max) = 0; // Returns the number of jobs to schedule if any
+            void*           m_user;        // User data that is passed to the job functions
+            job_name_fn     m_name_fn;     // (optional) Function to get the name of the job, for debugging and profiling
+            job_execute_fn  m_execute_fn;  // Function to execute the job
+            job_finished_fn m_finished_fn; // Function that is called when the job is finished, this is used to schedule more jobs if needed, for example, if a job is a 'for
         };
 
         // -----------------------------------------------------------------------------------------------------------------------
