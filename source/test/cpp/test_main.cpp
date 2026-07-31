@@ -1,3 +1,4 @@
+#include "ccore/config/descr/c_build.h"
 #include "cbase/c_base.h"
 #include "cbase/c_allocator.h"
 #include "cbase/c_console.h"
@@ -17,7 +18,7 @@ namespace ncore
 
         virtual bool handle_assert(const char* fileName, s32 lineNumber, const char* exprString, const char* messageString)
         {
-            UnitTest::ReportAssert(exprString, fileName, lineNumber);
+            UnitTest::ReportAssert(exprString, fileName, lineNumber, messageString);
             NumberOfAsserts++;
             return false;
         }
@@ -44,9 +45,11 @@ bool gRunUnitTest(UnitTest::TestReporter& reporter, UnitTest::TestContext& conte
 {
     cbase::init();
 
+    ncore::context_t* tcontext = ncore::g_current_context();
+
 #ifdef TARGET_DEBUG
     ncore::UnitTestAssertHandler assertHandler;
-    ncore::context_t::set_assert_handler(&assertHandler);
+    tcontext->set_assert_handler(&assertHandler);
     ncore::gSetAssertHandler(&assertHandler);
 #endif
     ncore::console->write("Configuration: ");
@@ -55,12 +58,15 @@ bool gRunUnitTest(UnitTest::TestReporter& reporter, UnitTest::TestContext& conte
     ncore::console->setColor(ncore::console_t::NORMAL);
 
     ncore::TestAllocator testAllocator(context.mAllocator);
-    ncore::alloc_t*      systemAllocator = ncore::context_t::system_alloc();
-    ncore::context_t::set_system_alloc(&testAllocator);
+    ncore::alloc_t*      systemAllocator = tcontext->system_alloc();
+    ncore::alloc_t*      heapAllocator = tcontext->heap_alloc();
+    tcontext->set_system_alloc(&testAllocator);
+    tcontext->set_heap_alloc(&testAllocator);
 
     int r = UNITTEST_SUITE_RUN(context, reporter, cUnitTest);
 
-    ncore::context_t::set_system_alloc(systemAllocator);
+    tcontext->set_heap_alloc(heapAllocator);
+    tcontext->set_system_alloc(systemAllocator);
 
     cbase::exit();
     return r == 0;

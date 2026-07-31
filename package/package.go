@@ -2,9 +2,9 @@ package cjobs
 
 import (
 	callocator "github.com/jurgen-kluft/callocator/package"
-	"github.com/jurgen-kluft/ccode/denv"
 	cthread "github.com/jurgen-kluft/cthread/package"
 	cunittest "github.com/jurgen-kluft/cunittest/package"
+	"github.com/jurgen-kluft/gide/denv"
 )
 
 const (
@@ -33,8 +33,8 @@ func GetPackage() *denv.Package {
 
 	// test library
 	testlib := denv.SetupCppTestLibProject(mainpkg, name)
-	mainlib.AddDependencies(callocpkg.GetTestLib())
-	mainlib.AddDependencies(cthreadpkg.GetTestLib())
+	testlib.AddDependencies(callocpkg.GetTestLib())
+	testlib.AddDependencies(cthreadpkg.GetTestLib())
 	testlib.AddDependencies(cunittestpkg.GetTestLib())
 
 	// unittest project
